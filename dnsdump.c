@@ -1,24 +1,24 @@
 /* dnsdump.c
  *
- * Copyright (c) Nominum, Inc 2013
+ * Copyright (c) Nominum, Inc 2013, 2017
  * All Rights Reserved
  */
 
 /*
- * This file is part of NDP.
+ * This file is part of DNSSD-RELAY.
  * 
- * NDP is free software: you can redistribute it and/or modify
+ * DNSSD-RELAY is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  * 
- * NDP is distributed in the hope that it will be useful,
+ * DNSSD-RELAY is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  * 
  * You should have received a copy of the GNU General Public License
- * along with NDP.  If not, see <http://www.gnu.org/licenses/>.
+ * along with DNSSD-RELAY.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #define __APPLE_USE_RFC_3542 1 /* lame */
@@ -39,7 +39,7 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 
-#include "ndp.h"
+#include "dnssd-relay.h"
 	     
 const char *opcode_names[16] = {"QUERY", "IQUERY", "STATUS",
 				"(reserved)", "NOTIFY", "UPDATE",

@@ -1,27 +1,26 @@
 /* dnspacket.c
  *
- * Copyright (c) Nominum, Inc 2013
- * All Rights Reserved
+ * Copyright (c) Nominum, Inc 2013, 2017
  */
 
 /*
- * This file is part of NDP.
+ * This file is part of DNSSD-RELAY.
  * 
- * NDP is free software: you can redistribute it and/or modify
+ * DNSSD-RELAY is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  * 
- * NDP is distributed in the hope that it will be useful,
+ * DNSSD-RELAY is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  * 
  * You should have received a copy of the GNU General Public License
- * along with NDP.  If not, see <http://www.gnu.org/licenses/>.
+ * along with DNSSD-RELAY.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define __APPLE_USE_RFC_3542 1 /* lame */
+#define __APPLE_USE_RFC_3542 1
 
 #include <errno.h>
 #include <sys/types.h>
@@ -39,7 +38,7 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 
-#include "ndp.h"
+#include "dnssd-relay.h"
 	     
 int
 query_parse(query_t *query, unsigned char *buf, ssize_t len)
@@ -263,179 +262,6 @@ parse_name(char *namebuf, int max,
     }
   syslog(LOG_DEBUG, "parse_name: full buffer suggests malicious packet.\n");
   return -FORMERR; // Format error
-}
-
-int
-add_opt_id(query_t *query, const char *id, int len)
-{
-  int rdlen;
-  int offset;
-
-  // If there is an OPT RR, see if it's at the end of the additional
-  // section; if not, move it there.
-  if (query->optptr && query->optptr + query->optlen != query->qlength)
-    {
-      int gap;
-      // Make a copy of the OPT RR
-      unsigned char *tmpopt = malloc(query->optlen);
-      if (!tmpopt)
-	{
-	  syslog(LOG_ERR, "no memory for OPT copy\n");
-	  return -SERVFAIL; // SERVFAIL
-	}
-      // Space consumed by options following OPT.
-      gap = query->qlength - query->optptr - query->optlen;
-      // Copy OPT into temporary buffer.
-      memcpy(tmpopt, &query->query[query->optptr], query->optlen);
-      // Move remaining options down to where OPT was.
-      memmove(&query->query[query->optptr],
-	      &query->query[query->optptr + query->optlen], gap);
-      // Now store OPT at the end of those data.
-      query->optptr += gap;
-      memcpy(&query->query[query->optptr], tmpopt, query->optlen);
-      free(tmpopt);
-    }
-
-  // If we already have an OPT record, add some data.
-  if (query->optlen)
-    {
-      // Make sure we saved enough space.
-      if (query->qlength + 4 + len > query->qmax)
-	{
-	  syslog(LOG_DEBUG, "Not enough space for ID option");
-	  return -SERVFAIL; // SERVFAIL
-	}
-
-      // Add the 4 bytes of header, the length of the identifier and
-      // a byte for the user ID code to the existing rdlength.
-      rdlen = ((query->query[query->optdata + 8] << 8) |
-	       query->query[query->optdata + 9]) + len + 4;
-
-      // Find the end of the current data.
-      offset = query->optlen + query->optptr;
-    }
-  else
-    {
-      int arcount;
-
-      query->added_edns0 = 1;
-
-      // Make sure we saved enough space.
-      // len('.') + fixed RRDATA + option header + hint type + len
-      if (query->qlength + 1 + 10 + 4 + len > query->qmax)
-	{
-	  syslog(LOG_DEBUG, "Not enough space for EDNS0 RRset");
-	  return -SERVFAIL; // SERVFAIL
-	}
-
-      rdlen = len + 4;
-
-      // We're adding an additional data section rrset, so increment adcount.
-      arcount = ARCOUNT(query->query);
-      arcount++;
-      query->query[10] = (arcount & 0xff00) >> 8;
-      query->query[11] = arcount & 0xff;
-
-      // Put in the OPT RR name (.)
-      offset = query->qlength;
-      query->optptr = offset;
-      query->query[offset++] = 0;
-
-      // Put in the fixed RRtype data header
-      query->optdata = offset;
-      // type
-      query->query[offset++] = 0; // (49 >> 8) & 0xff
-      query->query[offset++] = 41; // 49 & 0xff
-      // UDP payload size (class)
-      // Payload size is 512 because the client doesn't actually support
-      // EDNS0, so we can't accept a large answer.   Client is lame, needs
-      // fixed.
-      query->query[offset++] = 2; // (512 >> 8) & 0xff
-      query->query[offset++] = 0; // 512 & 0xff
-      // TTL
-      query->query[offset++] = 0;
-      query->query[offset++] = 0;
-      query->query[offset++] = 0;
-      query->query[offset++] = 0;
-      // rdlength
-      offset += 2;
-    }
-
-  // Update rdlength
-  query->query[query->optdata + 8] = (rdlen & 0xff00) >> 8;
-  query->query[query->optdata + 9] = rdlen & 0xff;
-
-  // Nominum NOMDEVICEID OPT type
-  query->query[offset++] = (OPT_NOMDEVICEID >> 8) & 0xff;
-  query->query[offset++] = OPT_NOMDEVICEID & 0xff;
-  
-  // OPT option length
-  query->query[offset++] = (len >> 8) & 0xff;
-  query->query[offset++] = len & 0xff;
-
-  // Copy in the id.
-  memcpy(&query->query[offset], id, len);
-  offset += len;
-
-  // Update the lengths.
-  query->optlen = offset - query->qlength;
-  query->qlength = offset;
-  return 0;
-}
-
-int
-drop_edns0(query_t *query, int added_edns0)
-{
-  // If there is no EDNS0 option on the return, that's weird, but for now
-  // we just ignore it.   It's allowed for a name server to ignore the
-  // OPT RR, since it's an extension, but _our_ name server should never
-  // ignore it.
-  if (!query->optptr)
-    return 0;
-
-  // If we added the OPT RR on the way out, we can just delete it on the
-  // way back, which is comparatively easy.
-  if (added_edns0)
-    {
-      int arcount, gap;
-
-      // Decrement ARCOUNT (should be >0)
-      arcount = ARCOUNT(query->query);
-      arcount--;
-      if (arcount < 0)
-	{
-	  syslog(LOG_DEBUG, "edns0 option present, arcount <0?");
-	  return -FORMERR;
-	}
-      query->query[10] = (arcount & 0xff00) >> 8;
-      query->query[11] = arcount & 0xff;
-
-      // If the OPT RR was at the end of the additional data, just
-      // shorten the length of the query data and return.
-      if (query->optptr + query->optlen == query->qlength)
-	{
-	  query->qlength = query->optptr;
-	zero:
-	  query->optptr = 0;
-	  query->optdata = 0;
-	  query->optlen = 0;
-	  return 0;
-	}
-
-      // No such luck.   Copy down what follows.
-      // Move remaining options down to where OPT was.
-      gap = query->qlength - query->optptr - query->optlen;
-      memmove(&query->query[query->optptr],
-	      &query->query[query->optptr + query->optlen], gap);
-      query->qlength -= query->optlen;
-      goto zero;
-    }
-
-  // Otherwise, the client sent an EDNS0 OPT RR, but we added our own
-  // option to it.  In production, we probably need to make sure we
-  // don't return that option back to the client, but in principle an
-  // unknown OPT option is harmless, so for now we do nothing.
-  return 0;
 }
 
 /* Local Variables:  */

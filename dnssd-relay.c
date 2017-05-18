@@ -1,28 +1,27 @@
-/* ndp.c
+/* dnssd-relay.c
  *
- * Copyright (c) Nominum, Inc 2013
- * All Rights Reserved
+ * Copyright (c) Nominum, Inc 2013, 2017
  */
 
 /*
- * This file is part of NDP.
+ * This file is part of DNSSD-RELAY.
  * 
- * NDP is free software: you can redistribute it and/or modify
+ * DNSSD-RELAY is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  * 
- * NDP is distributed in the hope that it will be useful,
+ * DNSSD-RELAY is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  * 
  * You should have received a copy of the GNU General Public License
- * along with NDP.  If not, see <http://www.gnu.org/licenses/>.
+ * along with DNSSD-RELAY.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define _GNU_SOURCE 1 /* lame */
-#define __APPLE_USE_RFC_3542 1 /* lame */
+#define _GNU_SOURCE 1
+#define __APPLE_USE_RFC_3542 1
 
 #include <errno.h>
 #include <sys/types.h>
@@ -44,19 +43,49 @@
 #include <ctype.h>
 #include <netinet/in.h>
 
-#include "ndp.h"
+#include "dnssd-relay.h"
 	     
-int exclude_default_route = 1;
+// dnssd-relay
+//
+//  * Get a list of interfaces
+//  * Set up a control channel listener on a unix domain socket
+//  * Start listening for messages on all open sockets (initially
+//    just the unix domain socket)
+//  * Accept updates on that socket as to which interfaces to listen
+//    on for unicast mDNS queries
+//      * primitive: add-dns <interface>
+//          * starts up a DNS listener on <interface>
+//        -> port
+//      * primitive: drop-dns <interface>
+//  * Accept updates on that socket as to which interfaces to listen
+//    on for mDNS multicasts
+//      * primitive: add-mdns <interface>
+//      * primitive: drop-mdns <interface>
+//  * Accept updates on that socket as to the IP addresses from which
+//    to accept DNS queries
+//      * primitive: add-accept <IP address>#<source-port>
+//      * primitive: drop-accept <IP address>#<source-port>
+//  * Accept updates on that socket as to the IP addresses to which to
+//    relay mDNS multicasts
+//      * primitive: add-send <IP address>#<dest-port>
+//      * primitive: drop-send <IP address>#<dest-port>
+//  * Accept command to print status on that socket
+//      * primitive: dump-status
+//        -> status
+//  * DNS queries not matching whitelisted addresses are silently
+//    dropped
+//  * DNS queries are forwarded unchanged on the interface
+//    corresponding to the port on which the message was received.
+//  * mDNS multicasts received on enabled interfaces are forwarded
+//    unchanged to all registered DNS listeners using the source port
+//    corresponding to the interface on which the multicast was
+//    received.
+
 interface_t *interfaces;
 struct pollfd *pollfds;
-query_t **queries;
+handler_t **handlers;
 int num_pollfds;
 int pollfd_max;
-int query_base; // first pollfd that relates to a query.
-nameserver_t *nameservers, *stale_nameservers;
-int sock4, sock6;
-time_t cycle;
-time_t resolv_conf_when, resolv_conf_checked;
 
 int
 ntop(char *buf, size_t buflen, address_t *address)
@@ -73,259 +102,6 @@ ntop(char *buf, size_t buflen, address_t *address)
     }
   sprintf(buf, "unknown family: %d", address->sa.sa_family);
   return 0;	
-}
-
-
-// Fetch the contents of the resolve.conf file and set up the nameservers
-// list on that basis.   In order to avoid leaving dangling pointers, we
-// overwrite the existing nameserver structures, rather than allocating new
-// ones.   If there aren't enough, we add more; if there are too many,
-// we zero the addresses in the remaining ones and hang them off of
-// stale_nameservers for possible later use.
-
-// BTW, there's something a bit broken about relying on /etc/resolv.conf
-// for configuration information.   We do it because that's how OpenWRT
-// communicates the name servers that it gets from the upstream service,
-// but that's really broken and I would prefer it if there were some
-// other way to get this information.   This is why there's code that
-// deliberately excludes the loopback address down below, but that's not
-// a complete solution, since in principle /etc/resolv.conf could contain
-// any of the host's IP addresses and still create a packet storm.
-// XXX Future work.
-
-static int
-check_resolv_conf(void)
-{
-  nameserver_t *ns, *nsp = nameservers, *prev = 0;
-  struct stat stb;
-  FILE *rcfile;
-  char rcline[256];
-#ifdef NSDEBUG
-  int nsmax;
-#endif
-
-  time(&resolv_conf_checked);
-  if (stat(RESOLV_CONF_NAME, &stb) < 0)
-    {
-      resolv_conf_when = 0;
-      return 0;
-    }
-
-  // File hasn't changed since last read.
-  if (resolv_conf_when == stb.st_mtime)
-    return 0;
-
-  // This code isn't able to notice that nameservers
-  // are being reused, so a reread of the resolv.conf
-  // file triggers a flush of all nameserver statistics.
-  // Arguably this is suboptimal, but fixing it adds
-  // some complexity.
-  for (ns = nameservers; ns; ns = ns->next)
-    {
-      memset(&ns->nqueries, 0, sizeof ns->nqueries);
-      memset(&ns->ncomplete, 0, sizeof ns->ncomplete);
-      memset(&ns->ndropped, 0, sizeof ns->ndropped);
-      memset(&ns->address, 0, sizeof ns->address);
-
-      if (ns->next == nameservers)
-	break;
-    }
-
-  // If there are stale nameservers, add them back to the nameserver
-  // list.
-  if (ns)
-    {
-      if (stale_nameservers)
-	{
-	  ns->next = stale_nameservers;
-	  stale_nameservers = 0;
-	}
-      else
-	ns->next = 0;
-    }
-  else
-    nameservers = stale_nameservers;
-      
-  resolv_conf_when = stb.st_mtime;
-  rcfile = fopen(RESOLV_CONF_NAME, "r");
-  if (!rcfile)
-    {
-      if (errno != ENOENT)
-	syslog(LOG_ERR, RESOLV_CONF_NAME ": can't open: %m");
-      return 0;
-    }
-
-#ifdef NSDEBUG
-  for (nsmax = 0, ns = nameservers;
-       nsmax < 10 && ns; nsmax++, ns = ns->next)
-    {
-      char obuf[128];
-      int port = ntop(obuf, sizeof obuf, &ns->address);
-      syslog(LOG_INFO, "%p %d A NS: %s#%d", ns, nsmax, obuf, port);
-      if (ns->next == nameservers)
-	break;
-    }
-  
-  if (nsmax == 10)
-    abort();
-#endif
-  
-  while (fgets(rcline, sizeof rcline, rcfile))
-    {
-      char *s;
-      for (s = rcline; *s && isascii(*s) && isspace(*s); s++)
-	;
-      if (*s && !strncmp(s, "nameserver", 10))
-	{
-	  for (s += 10; *s && isascii(*s) && isspace(*s); s++)
-	    ;
-	  if (*s)
-	    {
-	      char *t;
-	      address_t sockaddr;
-	      int port = 0;
-	      memset(&sockaddr, 0, sizeof sockaddr);
-
-	      // Find the end of the string and NUL-terminate it.
-	      for (t = s; *t && *t != '#' && isascii(*t) && !isspace(*t); t++)
-		;
-	      if (*t == '#')
-		{
-		  port = atoi(t + 1);
-		}
-	      *t = 0;
-	      if (port == 0)
-		port = 53;
-
-	      if (inet_pton(AF_INET, s, &sockaddr.in.sin_addr))
-		{
-		  syslog(LOG_INFO, "NS  INET: %s#%d", s, port);
-		  if (port != 53 ||
-		      sockaddr.in.sin_addr.s_addr != htonl(INADDR_LOOPBACK))
-		    {
-		      sockaddr.in.sin_family = AF_INET;
-		      sockaddr.in.sin_port = htons(port);
-		    }
-		}
-	      else if (inet_pton(AF_INET6, s, &sockaddr.in6.sin6_addr))
-		{
-		  syslog(LOG_INFO, "NS INET6: %s#%d", s, port);
-		  if (port != 53 ||
-		      memcmp(&sockaddr.in6.sin6_addr,
-			     &in6addr_loopback, sizeof in6addr_loopback))
-		    {
-		      sockaddr.in6.sin6_family = AF_INET6;
-		      sockaddr.in6.sin6_port = htons(port);
-		    }
-		}
-	      else
-		{
-		  syslog(LOG_ERR, "Bad nameserver entry in "
-			 RESOLV_CONF_NAME ": %s", s);
-		}
-	      if (sockaddr.sa.sa_family)
-		{
-		  if (nsp)
-		    {
-		      prev = nsp;
-		      ns = nsp;
-		      if (nsp->next == nameservers)
-			nsp = 0;
-		      else
-			nsp = nsp->next;
-		    }
-		  else
-		    {
-		      ns = malloc(sizeof *ns);
-		      if (!ns)
-			{
-			  syslog(LOG_CRIT,
-				 "no memory for nameserver");
-			  exit(1);
-			}
-		      memset(ns, 0, sizeof *ns);
-		      
-		      if (prev)
-			{
-			  ns->next = nameservers;
-			  prev->next = ns;
-			}
-		      else
-			{
-			  ns->next = ns;
-			  nameservers = ns;
-			}
-		      prev = ns;
-		    }
-		  ns->address = sockaddr;
-		}
-	    }
-	  
-#ifdef NSDEBUG
-	  for (nsmax = 0, ns = nameservers;
-	       nsmax < 10 && ns; nsmax++, ns = ns->next)
-	    {
-	      char obuf[128];
-	      int port = ntop(obuf, sizeof obuf, &ns->address);
-	      syslog(LOG_INFO, "%p %d B NS: %s#%d", ns, nsmax, obuf, port);
-	      if (ns->next == nameservers)
-		break;
-	    }
-	  
-	  if (nsmax == 10)
-	    abort();
-#endif
-	}
-    }
-  fclose(rcfile);
-
-  // Re-circularize the list.
-  if (prev)
-    prev->next = nameservers;
-  else
-    nameservers = 0;
-
-  // Any remaining nameservers are stale, and so we stash them
-  // against later need, but keep them out of the nameserver
-  // cycle.
-
-  if (nsp)
-    {
-      stale_nameservers = nsp;
-      while (nsp)
-	{
-	  memset(&nsp->address, 0, sizeof nsp->address);
-	  if (nsp->next == nameservers)
-	    nsp->next = 0;
-	  nsp = nsp->next;
-	}
-    }
-
-#ifdef NSDEBUG
-  for (nsmax = 0, ns = nameservers;
-       nsmax < 10 && ns; nsmax++, ns = ns->next)
-    {
-      char obuf[128];
-      int port = ntop(obuf, sizeof obuf, &ns->address);
-      syslog(LOG_INFO, "%p %d B NS: %s#%d", ns, nsmax, obuf, port);
-      if (ns->next == nameservers)
-	break;
-    }
-	  
-  if (nsmax == 10)
-    abort();
-
-  // Make sure we have a valid name server list.
-  for (nsp = nameservers; nsp; nsp = nsp->next)
-    {
-      if (!nsp->next)
-	abort();
-      if (nsp->next == nameservers)
-	break;
-    }
-#endif
-
-  return 1;
 }
 
 int
@@ -346,10 +122,14 @@ main(int argc, char **argv)
   time_t host_dumped;
   time_t last_ns_blip;
 
-  time(&host_dumped);
-  last_ns_blip = host_dumped;
+  openlog("dnssd-relay", LOG_NDELAY|LOG_PID|LOG_PERROR, LOG_DAEMON);
 
-  openlog("ndp", LOG_NDELAY|LOG_PID|LOG_PERROR, LOG_DAEMON);
+  // parse arguments so we know what interface(s) to exclude
+  //
+  // if no exclude interface specified, heuristic to guess which one
+  // to exclude will be required.  This is pretty easy--the netlink
+  // code can see if there is a default route on that interface; if
+  // so, don't accept queries from it.
 
   for (i = 1; i < argc; i++)
     {
@@ -359,94 +139,9 @@ main(int argc, char **argv)
 	{
 	  // Daemonize.
 	  closelog();
-	  openlog("ndp", LOG_NDELAY|LOG_PID, LOG_DAEMON);
-	}
-      else if (!strcmp(argv[i], "-x"))
-	{
-	  if (i + 1 == argc)
-	    syslog(LOG_CRIT, "-x <interface name>");
-	  ip = malloc(sizeof *ip);
-	  if (ip)
-	    {
-	      memset(ip, 0, sizeof *ip);
-	      ip->name = strdup(argv[i + 1]);
-	    }
-	  if (!ip || !ip->name)
-	    {
-	      syslog(LOG_CRIT, "Out of memory allocating interface %s",
-		      argv[i + 1]);
-	      exit(1);
-	    }
-	  if (strlen(ip->name) >= IFNAMSIZ)
-	    {
-	      syslog(LOG_CRIT, "Interface name too long: %s", ip->name);
-	      exit(0);
-	    }
-	  ip->excluded = 1;
-	  ip->index = -1;
-	  ip->next = interfaces;
-	  interfaces = ip;
-	  i++;
-	}
-      else if (!strcmp(argv[i], "-a"))
-	{
-	  exclude_default_route = 0;
-	}
-      else
-	{
-	  // Not an option, must be a DNS server address.
-	  ns = malloc(sizeof *ns);
-	  if (!ns)
-	    {
-	      syslog(LOG_CRIT, "no memory for nameserver");
-	      exit(1);
-	    }
-	  memset(ns, 0, sizeof *ns);
-
-	  // Look for a port in the server identifier.
-	  hashmark = strchr(argv[i], '#');
-	  if (hashmark)
-	    {
-	      port = atoi(hashmark + 1);
-	      *hashmark = 0;
-	    }
-	  else
-	    port = 53;
-	  
-	  // Try scanning address as IPv4 address and then IPv6 address
-	  if (inet_pton(AF_INET, argv[i], &ns->address.in.sin_addr))
-	    {
-	      syslog(LOG_INFO, "NS  INET: %s#%d", argv[i], port);
-	      ns->address.in.sin_family = AF_INET;
-	      ns->address.in.sin_port = htons(port);
-	    }
-	  else if (inet_pton(AF_INET6, argv[i], &ns->address.in6.sin6_addr))
-	    {
-	      syslog(LOG_INFO, "NS INET6: %s#%d", argv[i], port);
-	      ns->address.in.sin_family = AF_INET6;
-	      ns->address.in.sin_port = htons(port);
-	    }
-	  else
-	    {
-	      if (hashmark)
-		*hashmark = '#';
-	      syslog(LOG_CRIT, "invalid nameserver IP address: %s", argv[i]);
-	      exit(1);
-	    }
-	  if (!nsp)
-	    nsp = ns;
-	  ns->next = nameservers;
-	  nameservers = ns;
+	  openlog("dnssd-relay", LOG_NDELAY|LOG_PID, LOG_DAEMON);
 	}
     }
-
-  if (nsp)
-    nsp->next = nameservers;
-
-  // If no nameservers were specified on the command line, we're using
-  // resolv.conf.
-  if (!nameservers)
-      check_resolv_conf();
 
   // Get a socket; we will be listening on it, but for now just using it
   // for ioctls.
@@ -572,15 +267,110 @@ main(int argc, char **argv)
     }
 #endif
 
-  netlink_setup();
+  // Start receive loop
+  while (1)
+    {
+      int count;
 
-  // parse arguments so we know what interface(s) to exclude
-  // XXX if no exclude interface specified, heuristic to guess which
-  // XXX one to exclude will be required.   Future work.
-  // XXX actually this is pretty easy--the netlink code can see if
-  // XXX there is a default route on that interface; if so, don't
-  // XXX accept queries from it.
+      // Wait for a socket event.
+      count = poll(pollfds, num_pollfds, 0);
+      if (count < 0)
+	{
+	  syslog(LOG_CRIT, "poll: %m");
+	  exit(1);
+	}
+      time(&cycle);
 
+      // Cycle through all the pending queries looking for input.
+      // If a query either finishes or times out, close the socket
+      // and free the data structure.   J is kept as an index that
+      // increments only for kept queries, so as we advance through
+      // the list we copy down the good entries, overwriting the
+      // expired ones.
+      j = query_base;
+      for (i = query_base; i < num_pollfds; i++)
+	{
+	  // If the socket was closed due to an earlier error, skip
+	  // over it and let it be garbage-collected.
+	  if (handlers[i]->socket == -1)
+	    result = -1;
+
+	  // Otherwise, if the socket has an input event on it, process
+	  // the input.
+	  else if (pollfds[i].revents & POLLIN)
+	    {
+#ifdef DEBUG_POLL
+	      printf("read %d, cycle %ld\n",
+		     handlers[i]->socket, (long)(cycle - handlers[i]->cycle));
+#endif
+	      result = response_read(handlers[i]);
+	    }
+
+	  // Otherwise, if the query is less than 90 seconds old, keep it.
+	  else if (cycle - handlers[i]->cycle < 90)
+	    result = 1;
+
+	  // Otherwise, drop it.
+	  else
+	    result = -1;
+
+	  if (result < 0)
+	    {
+	      if (handlers[i]->socket != -1)
+		close(handlers[i]->socket);
+	      handlers[i]->socket = -1;
+	      free(handlers[i]);
+	      handlers[i] = 0;
+	      pollfds[i].fd = -1;
+#ifdef DEBUG_POLL
+	      printf("delete %d\n", i);
+#endif
+	    }
+	  else
+	    {
+	      if (j != i)
+		{
+#ifdef DEBUG_POLL
+		  printf("keep %d\n", i);
+#endif
+		  pollfds[j] = pollfds[i];
+		  handlers[j] = handlers[i];
+		}
+	      j++;
+	    }
+	}
+#ifdef DEBUG_POLL
+      printf("num_pollfds %d -> %d\n", num_pollfds, j);
+#endif
+      num_pollfds = j;
+
+      // Now do the fixed sockets.   We do these last because
+      // they can trigger the addition of new queries to poll, and
+      // it's easier to do that after we've rippled away any stale
+      // and/or completed queries.
+      if (pollfds[0].revents & (POLLERR | POLLHUP))
+	{
+	  syslog(LOG_CRIT, "netlink socket error event: %x",
+		  pollfds[0].revents);
+	  exit(1);
+	}
+      if (pollfds[0].revents & POLLIN)
+	netlink_read();
+      if (pollfds[1].revents & POLLIN)
+	query_read(AF_INET6, sock6);
+      if (pollfds[2].revents & POLLIN)
+	query_read(AF_INET, sock4);
+    }
+  return 0;
+}
+
+// Add a DNS listener for the specified interface.   Note that this is the
+// port number for that interface, not a listener that only accepts packets
+// on that interface.   DNS packets are accepted on all interfaces.
+
+void
+add_dns_listeners(interface_t *ip)
+{
   // open ipv6 socket, listen on IN6ADDR_ANY
   // This lets us bind to port 53 on two sockets.
   flag = 1;
@@ -601,10 +391,10 @@ main(int argc, char **argv)
 
   memset(&s6, 0, sizeof s6);
   s6.sin6_family = AF_INET6;
-  s6.sin6_port = htons(53); // domain
+  s6.sin6_port = htons(ip->port); // domain
   if (bind(sock6, (struct sockaddr *)&s6, sizeof s6) < 0)
     {
-      syslog(LOG_CRIT, "bind (IPv6 port 53): %m");
+      syslog(LOG_CRIT, "bind %s (IPv6 port %d): %m", ip->name, ip->port);
       exit(1);
     }
 
@@ -644,177 +434,46 @@ main(int argc, char **argv)
 
   memset(&s4, 0, sizeof s4);
   s4.sin_family = AF_INET;
-  s4.sin_port = htons(53);
+  s4.sin_port = htons(ip->port);
   if (bind(sock4, (struct sockaddr *)&s4, sizeof s4) < 0)
     {
-      syslog(LOG_CRIT, "bind (IPv4 port 53): %m");
+      syslog(LOG_CRIT, "bind %s (IPv4 port %d): %m", ip->name, ip->port);
       exit(1);
     }
 
-  pollfd_max = 10;
-  pollfds = malloc(10 * sizeof *pollfds);
-  queries = malloc(10 * sizeof *queries);
-  if (!pollfds || !queries)
-    {
-      syslog(LOG_CRIT, "No memory for pollfds!");
-      exit(1);
-    }
-  memset(queries, 0, 10 * sizeof *queries);
-  num_pollfds = 3;
-  pollfds[0].fd = netlink_socket;
-  pollfds[0].events = POLLIN | POLLERR | POLLHUP;
-  pollfds[1].fd = sock6;
-  pollfds[1].events = POLLIN;
-  pollfds[2].fd = sock4;
-  pollfds[2].events = POLLIN;
-  query_base = 3;
+  add_pollfd(sock6, POLLIN);
+  add_pollfd(sock4, POLLIN);
+}
 
-  // Start receive loop
-  while (1)
+void
+add_pollfd(int socket, int events)
+{
+  if (num_pollfds == pollfd_max)
     {
-      int count;
+      struct pollfd *old_pollfds;
+      int old_pollfd_max;
 
-      count = poll(pollfds, num_pollfds, 1000 * (10 - cycle - last_ns_blip));
-      if (count < 0)
+      old_pollfd_max = pollfd_max;
+      pollfd_max = old_pollfd_max + 10;
+      old_pollfds = pollfds;
+
+      pollfds = malloc(new_pollfd_max * sizeof *pollfds);
+      if (pollfds == NULL)
 	{
-	  syslog(LOG_CRIT, "poll: %m");
+	  syslog(LOG_CRIT, "No memory for pollfds!");
 	  exit(1);
 	}
-      time(&cycle);
-
-      // If we are relying on the resolv.conf file, check it every five
-      // seconds to see if it has changed.
-      if (resolv_conf_checked != 0 && cycle - resolv_conf_checked > 5)
+      if (old_pollfds != NULL)
 	{
-	  if (check_resolv_conf())
-	    last_ns_blip = cycle;
+	  memcpy(pollfds, old_pollfds, old_pollfd_max * sizeof *pollfds);
+	  free(old_pollfds);
+	  memset(pollfds + old_pollfd_max * sizeof *pollfds, 10 * sizeof *pollfds, 0);
 	}
+    }      
 
-      // Cycle the nameserver statistics
-      if (cycle - last_ns_blip >= 10)
-	{
-	  int i;
-	  if (nameservers)
-	    {
-	      nameserver_t *nsp = nameservers;
-
-	      do {
-#ifdef DEBUG_CYCLE
-		printf("nameserver %04x:", ((int)(long)nsp) & 0xffff);
-#endif
-		for (i = 4; i > 0; i--)
-		  {
-#ifdef DEBUG_CYCLE
-		    printf(" <%d %d %d>", nsp->nqueries[i],
-			   nsp->ncomplete[i], nsp->ndropped[i]);
-#endif
-		    nsp->nqueries[i] = nsp->nqueries[i - 1];
-		    nsp->ncomplete[i] = nsp->ncomplete[i - 1];
-		    nsp->ndropped[i] = nsp->ndropped[i - 1];
-		  }
-#ifdef DEBUG_CYCLE
-		printf(" <%d %d %d>",
-		       nsp->nqueries[0], nsp->ncomplete[0], nsp->ndropped[0]);
-#endif
-		nsp->nqueries[0] = nsp->ncomplete[0] = nsp->ndropped[0] = 0;
-
-		nsp = nsp->next;
-#ifdef DEBUG_CYCLE
-		printf("\n");
-#endif
-	      } while (nsp != nameservers);
-	    }
-	  last_ns_blip = cycle;
-	}
-
-      // Periodically dump the host table.
-      if (cycle - host_dumped > 60)
-	{
-	  host_dumped = cycle;
-	  dump_ntes();
-	}
-
-      // Cycle through all the pending queries looking for input.
-      // If a query either finishes or times out, close the socket
-      // and free the data structure.   J is kept as an index that
-      // increments only for kept queries, so as we advance through
-      // the list we copy down the good entries, overwriting the
-      // expired ones.
-      j = query_base;
-      for (i = query_base; i < num_pollfds; i++)
-	{
-	  // If the socket was closed due to an earlier error, skip
-	  // over it and let it be garbage-collected.
-	  if (queries[i]->socket == -1)
-	    result = -1;
-
-	  // Otherwise, if the socket has an input event on it, process
-	  // the input.
-	  else if (pollfds[i].revents & POLLIN)
-	    {
-#ifdef DEBUG_POLL
-	      printf("read %d, cycle %ld\n",
-		     queries[i]->socket, (long)(cycle - queries[i]->cycle));
-#endif
-	      result = response_read(queries[i]);
-	    }
-
-	  // Otherwise, if the query is less than 90 seconds old, keep it.
-	  else if (cycle - queries[i]->cycle < 90)
-	    result = 1;
-
-	  // Otherwise, drop it.
-	  else
-	    result = -1;
-
-	  if (result < 0)
-	    {
-	      if (queries[i]->socket != -1)
-		close(queries[i]->socket);
-	      queries[i]->socket = -1;
-	      free(queries[i]);
-	      queries[i] = 0;
-	      pollfds[i].fd = -1;
-#ifdef DEBUG_POLL
-	      printf("delete %d\n", i);
-#endif
-	    }
-	  else
-	    {
-	      if (j != i)
-		{
-#ifdef DEBUG_POLL
-		  printf("keep %d\n", i);
-#endif
-		  pollfds[j] = pollfds[i];
-		  queries[j] = queries[i];
-		}
-	      j++;
-	    }
-	}
-#ifdef DEBUG_POLL
-      printf("num_pollfds %d -> %d\n", num_pollfds, j);
-#endif
-      num_pollfds = j;
-
-      // Now do the fixed sockets.   We do these last because
-      // they can trigger the addition of new queries to poll, and
-      // it's easier to do that after we've rippled away any stale
-      // and/or completed queries.
-      if (pollfds[0].revents & (POLLERR | POLLHUP))
-	{
-	  syslog(LOG_CRIT, "netlink socket error event: %x",
-		  pollfds[0].revents);
-	  exit(1);
-	}
-      if (pollfds[0].revents & POLLIN)
-	netlink_read();
-      if (pollfds[1].revents & POLLIN)
-	query_read(AF_INET6, sock6);
-      if (pollfds[2].revents & POLLIN)
-	query_read(AF_INET, sock4);
-    }
-  return 0;
+  pollfds[num_pollfds].fd = socket
+  pollfds[0].events = events;
+  num_pollfds++;
 }
 
 int
