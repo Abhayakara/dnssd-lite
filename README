@@ -1,19 +1,21 @@
-DNSSD-RELAY is a mDNS relay for implementing multi-link DNS service discovery
-using mDNS as a service offer/enumerate/use transport.
+DNSSD-RELAY is a Multicast Discovery Proxy relay.  Multicast Discovery Proxy is a method for for
+implementing multi-link DNS service discovery using mDNS on each link.
 
-The relay listens for mDNS multicasts on enabled interfaces and relays any such
-multicasts unchanged to one or more DNSSD Query Proxies using unicast UDP over
-either IPv4 or IPv6.
+The relay proxy is an extremely lightweight mechanism for allowing a special Multicast Discovery
+Proxy, called a Query Proxy, to act as a central DNSSD server for a site, using one or more
+relay proxies to deliver mDNS queries to every link on which services may be present, and to
+deliver mDNS multicast messages from those links to the Query Proxy.
 
-The relay also listens for unicast UDP requests from the DNSSD Query Proxy,
-and forwards those requests to the link designated for each request.
+The relay listens for mDNS multicasts on enabled interfaces and relays any such multicasts
+unchanged to one or more DNSSD Query Proxies using unicast UDP over either IPv4 or IPv6.
 
-Links are identified using UDP Ports: any given network interface on the
-relay proxy has a UDP port assigned to it.   mDNS packets received on that
-interface are forwarded with that interface's port number as the source
-port.   mDNS packets received from the Query Proxy are multicast on the
-link corresponding to the port on which the packet was received.
+The relay also listens for unicast UDP requests from the DNSSD Query Proxy, and forwards those
+requests to the link designated for each request.
 
-The relay proxy listens on /tmp/relay-proxy-sock for control instructions.
-A list of all the supported instructions is given in the comment at the top
-of dnssd-relay.c.
+Links are identified using UDP Ports: every network interface on the relay proxy host has a UDP
+port assigned to it.  mDNS packets received on that interface are forwarded with that
+interface's port number as the source port.  mDNS packets received from the Query Proxy are
+multicast on the link corresponding to the port on which the packet was received.
+
+The relay proxy listens on /tmp/relay-proxy-sock for control instructions.  A list of all the
+supported instructions is given in the comment at the top of dnssd-relay.c.
