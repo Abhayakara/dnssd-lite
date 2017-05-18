@@ -21,7 +21,7 @@
  * along with DNSSD-RELAY.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define __APPLE_USE_RFC_3542 1 /* lame */
+#define __APPLE_USE_RFC_3542 1
 
 #include <errno.h>
 #include <sys/types.h>
