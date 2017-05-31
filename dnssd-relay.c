@@ -52,7 +52,7 @@
 //  * Start listening for messages on all open sockets (initially
 //    just the unix domain socket)
 //  * Accept updates on that socket as to which interfaces to listen
-//    on for unicast mDNS queries
+//    on for TCP connections from Query proxies
 //      * primitive: add-dns <interface>
 //          * starts up a DNS listener on <interface>
 //        -> port
@@ -63,29 +63,21 @@
 //      * primitive: drop-mdns <interface>
 //  * Accept updates on that socket as to the IP addresses from which
 //    to accept DNS queries
-//      * primitive: add-accept <IP address>#<source-port>
-//      * primitive: drop-accept <IP address>#<source-port>
-//  * Accept updates on that socket as to the IP addresses to which to
-//    relay mDNS multicasts
-//      * primitive: add-send <IP address>#<dest-port>
-//      * primitive: drop-send <IP address>#<dest-port>
+//      * primitive: add-accept <IP address> <source-port>
+//      * primitive: drop-accept <IP address> <source-port>
 //  * Accept command to print status on that socket
 //      * primitive: dump-status
 //        -> status
-//  * DNS queries not matching whitelisted addresses are silently
-//    dropped
+//  * TCP connections from hosts not matching whitelisted address/port
+//    tuples are silently dropped
 //  * DNS queries are forwarded unchanged on the interface
 //    corresponding to the port on which the message was received.
 //  * mDNS multicasts received on enabled interfaces are forwarded
-//    unchanged to all registered DNS listeners using the source port
-//    corresponding to the interface on which the multicast was
-//    received.
+//    unchanged to connected query proxies over the TCP connection for
+//    that proxy corresponding to the interface on which the multicast
+//    was received.
 
 interface_t *interfaces;
-struct pollfd *pollfds;
-handler_t **handlers;
-int num_pollfds;
-int pollfd_max;
 
 int
 ntop(char *buf, size_t buflen, address_t *address)
@@ -443,37 +435,6 @@ add_dns_listeners(interface_t *ip)
 
   add_pollfd(sock6, POLLIN);
   add_pollfd(sock4, POLLIN);
-}
-
-void
-add_pollfd(int socket, int events)
-{
-  if (num_pollfds == pollfd_max)
-    {
-      struct pollfd *old_pollfds;
-      int old_pollfd_max;
-
-      old_pollfd_max = pollfd_max;
-      pollfd_max = old_pollfd_max + 10;
-      old_pollfds = pollfds;
-
-      pollfds = malloc(new_pollfd_max * sizeof *pollfds);
-      if (pollfds == NULL)
-	{
-	  syslog(LOG_CRIT, "No memory for pollfds!");
-	  exit(1);
-	}
-      if (old_pollfds != NULL)
-	{
-	  memcpy(pollfds, old_pollfds, old_pollfd_max * sizeof *pollfds);
-	  free(old_pollfds);
-	  memset(pollfds + old_pollfd_max * sizeof *pollfds, 10 * sizeof *pollfds, 0);
-	}
-    }      
-
-  pollfds[num_pollfds].fd = socket
-  pollfds[0].events = events;
-  num_pollfds++;
 }
 
 int

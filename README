@@ -9,8 +9,8 @@ deliver mDNS multicast messages from those links to the Query Proxy.
 The relay listens for mDNS multicasts on enabled interfaces and relays any such multicasts
 unchanged to one or more DNSSD Query Proxies using unicast UDP over either IPv4 or IPv6.
 
-The relay also listens for unicast UDP requests from the DNSSD Query Proxy, and forwards those
-requests to the link designated for each request.
+The DNSSD Query Proxy establishes a TCP connection to the Relay Proxy.   Questions sent from
+the Query Proxy are forwarded by the Relay Proxy to the link designated for each question.
 
 Links are identified using UDP Ports: every network interface on the relay proxy host has a UDP
 port assigned to it.  mDNS packets received on that interface are forwarded with that

@@ -49,6 +49,33 @@ typedef struct interface {
   int enabled;
 } interface_t;
 
+// // Structures required for pcmd.c, line-oriented command protocol parser
+
+// Types of arguments supported on command lines.
+typedef union arg {
+  interface_t interface;
+  address_t addr;
+  u_int16_t port;
+} arg_t;
+  
+typedef enum {
+  ARGTYPE_NONE, ARGTYPE_INTERFACE, ARGTYPE_IPADDR, ARGTYPE_PORT
+} argtype_t;
+
+// Maximum number of arguments supported per line.
+#define MAX_CHUNKS	3
+
+// Description of a command: its name, am integer code for that name,
+// number of arguments expected, function to call to implement it,
+// and an array containing the expected type of each argument.
+typedef struct {
+  char *name;
+  code_t code;
+  int nargs;
+  void (*implementation)(unixconn_t *uct, int argc, arg_t *args);
+  argtype_t argtype[MAX_CHUNKS - 1];
+} control_command_t;
+
 /* dnssd-relay.c */
 extern interface_t *interfaces;
 int response_read(query_t *query);
