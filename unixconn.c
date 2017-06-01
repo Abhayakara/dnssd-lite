@@ -28,96 +28,19 @@
 
 #include <errno.h>
 #include <sys/types.h>
-#include <netinet/in.h>
+#include <sys/un.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <string.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <syslog.h>
 #include <time.h>
-#include <ifaddrs.h>
-#include <net/if.h>
 #include <sys/ioctl.h>
 #include <poll.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <ctype.h>
-#include <netinet/in.h>
 
 #include "dnssd-relay.h"
 	     
-// Create a unix-domain stream socket, bind it to the specified path,
-// listen on it, and add it to the polling set.
-// On error, return value is non-NULL, and contains a string that
-// explains what went wrong.
-// On success, return value is NULL, and a unixconn_t is stored
-// through the rv pointer.
-
-const char *
-unixconn_socket_create(unixconn_t *rv, const char *path)
-{
-  struct sockaddr_un sockname;
-  int len;
-  int sock;
-  int result;
-  const char *errstr;
-
-  if (path == NULL)
-    return "no name given";
-  len = strnlen(path, 1 + sizeof sockname.sun_path);
-  if (len > sizeof sockname.sun_path)
-    return "name too long";
-  if (rv == NULL)
-    return "no return destination";
-
-  socket = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (sock < 0)
-    return strerror(errno);
-
-  strcpy(sockname.sun_path, path);
-  sockname.sun_len = len + (sizeof sockname) - (sizeof sockname.path);
-  sockname.sun_family = AF_UNIX;
-  result = bind(sock, (sockaddr_t *)&sockname, sockname.sun_len);
-  if (result < 0)
-    {
-      close(sock);
-      return strerror(err);
-    }
-  
-  result = listen(sock, 5);
-  if (result < 0)
-    {
-      close(sock);
-      return strerror(err);
-    }
-
-  return unixconn_make(rv, sock, path, "listener", unixconn_listen_handler, listen_callback);
-}
-
-// Provide a function to call when a listen completes.
-const char *
-unixconn_set_listen_handler(unixconn_t *uct,
-			    char *(*listen_handler)(unixconn_t *))
-{
-  if (uct == NULL)
-    return "unixconn_set_listen_handler: invalid unixconn_t";
-  uct->listen_handler = listen_handler;
-  return NULL;
-}  
-
-// Provide a function to call when a listen completes.
-const char *
-unixconn_set_read_handler(unixconn_t *uct,
-			  char *(*read_handler)(unixconn_t *))
-{
-  if (uct == NULL)
-    return "unixconn_set_read_handler: invalid unixconn_t";
-  uct->read_handler = read_handler;
-  return NULL;
-}  
-
 // Free function for the unixconn_t that we pass to the async i/o package
 void
 unixconn_free_uct(unixconn_t *uct)
@@ -139,90 +62,58 @@ unixconn_free_uct(unixconn_t *uct)
   free(uct);
 }
       
-
 // Helper function to finish setting up the unixconn_t and register the
 // async I/O handler.
 
 const char *
-unixconn_make(unixconn_t *rv, int sock, const char *path, const char *remote, 
+unixconn_make(unixconn_t **rv, int slot, const char *path, const char *remote, 
 	      asio_event_handler_t handler)
 {
-  unixconn_t *uct = malloc(sizeof unixconn_t);
+  const char *errstr;
+  int len = strlen(path);
+  char *name;
+  unixconn_t *uct = malloc(sizeof *uct);
+
   if (uct == NULL)
-    {
-      errstr = "insufficient memory for unixconn_t";
-      goto have_socket_err;
-    }
+    return "insufficient memory for unixconn_t";
   memset(uct, 0, sizeof *uct);
 
   uct->path = malloc(len + 1);
   if (uct->path == NULL)
     {
       errstr = "Insufficient memory for name in unixconn_t";
-      goto have_uct_err;
+      free(uct);
     }
-  strcpy(uct->path, name);
+  strcpy(uct->path, path);
 
   uct->remote = malloc(strlen(remote) + 1);
   if (uct->remote == NULL)
     {
-      errstr = "Insufficient memory for remote name in unixconn_t";
-      goto have_path_err;
+      unixconn_free_uct(uct);
+      return "Insufficient memory for remote name in unixconn_t";
     }
   strcpy(uct->remote, remote);
 
-  uct->socket = sock;
+  uct->slot = slot;
 
-  errstr = asio_add(&slot, uct, sock, unixconn_free_uct);
+  errstr = asio_set_thunk(slot, uct, unixconn_free_uct);
   if (errstr != NULL)
-    goto have_remote_err;
+    {
+      unixconn_free_uct(uct);
+      return errstr;
+    }
 
-  errstr = asio_set_handler(POLLIN, handler);
-  if (errorstr != NULL)
-    goto have_asio_err;
+  errstr = asio_set_handler(slot, POLLIN, handler);
+  if (errstr != NULL)
+    {
+      unixconn_free_uct(uct);
+      return errstr;
+    }
       
   *rv = uct;
   return NULL;
-
- have_asio_err:
-  asio_deref(slot);
- have_remote_err:
-  free(uct->remote);
- have_path_err:
-  free(uct->path);
- have_uct_err:
-  free(uct);
-  close(sock);
-
-  return errstr;
 }
 
-// Called when the listen socket is readable.
-void
-unixconn_listen_handler(int slot, int events, void *thunk)
-{
-  unixconn_t *uct = thunk;
-  unixconn_t *rv;
-  int sock;
-  struct sockaddr junk;
-  const char *errstr;
-
-  errstr = asio_accept(&sock, slot, &junk, sizeof junk);
-  if (errstr != NULL)
-    {
-      syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
-      return;
-    }
-
-  errstr = unixconn_make(&rv, sock, uct->path, "connected", unixconn_read_handler);
-  if (errstr != NULL)
-    {
-      syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
-      return;
-    }
-  uct->listen_handler(rv);
-}
-  
 // Read available data from the socket.   Data is in the form of lines
 // of text separated by '\n' or '\r\n'.  Call the line-of-text handler
 // once for each line of  text.  Text is NUL-terminated before passing
@@ -249,7 +140,7 @@ unixconn_read_handler(int slot, int events, void *thunk)
   // read text from the socket; complete an unfinished line if there
   // is one hanging from a previous read.  later: generalize this into
   // its own module so we can use it for tcp connections, etc?
-  status = asio_read(sock, ibuf, sizeof ibuf);
+  status = asio_read(slot, ibuf, sizeof ibuf);
   if (status < 0)
     {
       syslog(LOG_ERR, "unixconn_read_handler: %m");
@@ -287,7 +178,7 @@ unixconn_read_handler(int slot, int events, void *thunk)
 		asio_deref(slot);
 		return;
 	      }
-	    memcpy(uct->buf + uct->buflen, resid);
+	    memcpy(uct->buf + uct->buflen, resid, len);
 	    uct->buflen += len;
 	    uct->buf[uct->buflen] = 0;
 
@@ -309,7 +200,117 @@ unixconn_read_handler(int slot, int events, void *thunk)
       }
   }
 }
-      
+
+// Called when the listen socket is readable.
+void
+unixconn_listen_handler(int slot, int events, void *thunk)
+{
+  unixconn_t *uct = thunk;
+  unixconn_t *rv;
+  int aslot;
+  struct sockaddr junk;
+  const char *errstr;
+
+  errstr = asio_accept(&aslot, &junk, sizeof junk);
+  if (errstr != NULL)
+    {
+      syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
+      return;
+    }
+
+  errstr = unixconn_make(&rv, aslot, uct->path, "connected", unixconn_read_handler);
+  if (errstr != NULL)
+    {
+      syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
+      return;
+    }
+  uct->listen_handler(rv);
+}
+  
+// Create a unix-domain stream socket, bind it to the specified path,
+// listen on it, and add it to the polling set.
+// On error, return value is non-NULL, and contains a string that
+// explains what went wrong.
+// On success, return value is NULL, and a unixconn_t is stored
+// through the rv pointer.
+
+const char *
+unixconn_socket_create(unixconn_t *rv, const char *path)
+{
+  struct sockaddr_un sockname;
+  int len;
+  int sock;
+  int slot;
+  int result;
+  const char *errstr;
+
+  if (path == NULL)
+    return "no name given";
+  len = strnlen(path, 1 + sizeof sockname.sun_path);
+  if (len > sizeof sockname.sun_path)
+    return "name too long";
+  if (rv == NULL)
+    return "no return destination";
+
+  sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sock < 0)
+    return strerror(errno);
+
+  strcpy(sockname.sun_path, path);
+  sockname.sun_len = len + (sizeof sockname) - (sizeof sockname.sun_path);
+  sockname.sun_family = AF_UNIX;
+  result = bind(sock, (struct sockaddr *)&sockname, sockname.sun_len);
+  if (result < 0)
+    {
+      close(sock);
+      return strerror(errno);
+    }
+  
+  result = listen(sock, 5);
+  if (result < 0)
+    {
+      close(sock);
+      return strerror(errno);
+    }
+
+  errstr = asio_add(&slot, sock);
+  if (errstr != NULL)
+    {
+      close(sock);
+      return errstr;
+    }
+
+  errstr = unixconn_make(rv, slot, path, "listener", unixconn_listen_handler);
+  if (errstr != NULL)
+    {
+      close(sock);
+      return errstr;
+    }
+  return NULL;
+}
+
+// Provide a function to call when a listen completes.
+const char *
+unixconn_set_listen_handler(unixconn_t *uct,
+			    char *(*listen_handler)(unixconn_t *))
+{
+  if (uct == NULL)
+    return "unixconn_set_listen_handler: invalid unixconn_t";
+  uct->listen_handler = listen_handler;
+  return NULL;
+}  
+
+// Provide a function to call when a listen completes.
+const char *
+unixconn_set_read_handler(unixconn_t *uct,
+			  char *(*read_handler)(unixconn_t *, char *))
+{
+  if (uct == NULL)
+    return "unixconn_set_read_handler: invalid unixconn_t";
+  uct->read_handler = read_handler;
+  return NULL;
+}  
+
 /* Local Variables:  */
 /* mode:C */
 /* c-file-style:"gnu" */

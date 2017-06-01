@@ -53,6 +53,27 @@ const char *rcode_names[16] = {"NOERROR", "FORMERR", "SERVFAIL", "NAMERR",
 			       "(reserved)", "(reserved)", "(reserved)",
 			       "(reserved)", "(reserved)"};
 
+const char *
+classname(int class)
+{
+  if (class == 1)
+    return "IN";
+  else if (class == 3)
+    return "CH";
+  else if (class == 4)
+    return "HS";
+  else if (class == 0xFE)
+    return "NO";
+  else if (class == 0xFF)
+    return "AY";
+  else if (class > 0xFF00 && class < 0xFFFF)
+    return "PV";
+  else if (class == 0 || class == 0xFFFF)
+    return "RV";
+  else
+    return "UN";
+}
+
 int
 query_dump(unsigned char *buf, ssize_t len)
 {
@@ -137,27 +158,6 @@ query_dump(unsigned char *buf, ssize_t len)
 	}      
     }
   return offset;
-}
-
-const char *
-classname(int class)
-{
-  if (class == 1)
-    return "IN";
-  else if (class == 3)
-    return "CH";
-  else if (class == 4)
-    return "HS";
-  else if (class == 0xFE)
-    return "NO";
-  else if (class == 0xFF)
-    return "AY";
-  else if (class > 0xFF00 && class < 0xFFFF)
-    return "PV";
-  else if (class == 0 || class == 0xFFFF)
-    return "RV";
-  else
-    return "UN";
 }
 
 int

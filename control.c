@@ -45,27 +45,25 @@
 
 #include "dnssd-relay.h"
 	     
-// This file contains the unix connection protocol engine.
+address_t *whitelist;
+int whitelist_len, whitelist_max;
 
-const char *
-control_start(const char *path)
+// Write a response to the client
+void
+control_write_status(unixconn_t *uct, int code, const char *message, const char *more)
 {
-  unixconn_t *uct;
-  const char *errstr;
-
-  errstr = unixconn_socket_create(&uct, path);
-  if (errstr = NULL)
-    return errstr;
-
-  errstr = unixconn_set_listen_handler(uct, control_listen);
-  if (errstr == NULL)
-    return errstr;
-
-  do {
-    errstr = asio_poll_once(-1);
-  } while (errstr == NULL);
+  char buf[256];
+  snprintf(buf, "%03d %s%s%s\n", code, message, more[0] == 0 ? "" : ": ", more);
+  unixconn_write(uct, buf);
 }
 
+// Called when a line of text comes in from the client
+void
+control_read(unixconn_t *uct, char *line, control_commands)
+{
+  pcmd_dispatch(uct, line);
+}
+      
 // Called when a new client connects.
 
 void
@@ -75,13 +73,35 @@ control_listen(unixconn_t *uct)
   unixconn_set_read_handler(uct, control_read);
 }
 
+// This file contains the unix connection protocol engine.
+
+const char *
+control_start(const char *path)
+{
+  unixconn_t *uct;
+  const char *errstr;
+
+  errstr = unixconn_socket_create(&uct, path);
+  if (errstr == NULL)
+    return errstr;
+
+  errstr = unixconn_set_listen_handler(uct, control_listen);
+  if (errstr == NULL)
+    return errstr;
+
+  do {
+    errstr = asio_poll_once(-1);
+  } while (errstr == NULL);
+  return NULL; /*NOTREACHED*/
+}
+
 // add-dns <interface>
 // Add a DNS listener for <interface>
 
 void
 control_add_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
-  errstr = tdns_listener_add(args[0].interface);
+  const char *errstr = tdns_listener_add(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
 }
@@ -92,7 +112,7 @@ control_add_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 void
 control_drop_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
-  errstr = tdns_listener_drop(args[0].interface);
+  const char *errstr = tdns_listener_drop(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
 }
@@ -103,7 +123,7 @@ control_drop_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 void
 control_add_mdns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
-  errstr = mdns_listener_add(args[0].interface);
+  const char *errstr = mdns_listener_add(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
 }
@@ -114,7 +134,7 @@ control_add_mdns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 void
 control_drop_mdns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
-  errstr = mdns_listener_drop(args[0].interface);
+  const char *errstr = mdns_listener_drop(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
 }
@@ -137,7 +157,7 @@ control_digest_addr(address_t *addr, arg_t *args)
     }
   for (ix = 0; ix < whitelist_len; ix++)
     {
-      if (!memcmp(addr, whitelist[ix], sizeof *addr))
+      if (!memcmp(addr, &whitelist[ix], sizeof *addr))
 	return ix;
     }
   return -1;
@@ -154,11 +174,13 @@ control_add_accept(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *arg
 
   ix = control_digest_addr(&addr, args);
   if (ix != -1)
-    return control_write_status(uct, 500, "ok");
+    return control_write_status(uct, 500, "ok", "");
 
   if (whitelist_len == whitelist_max)
     {
-      new_whitelist_max = whitelist_max + 10;
+      int new_whitelist_max = whitelist_max + 10;
+      address_t *new_whitelist;
+
       new_whitelist = malloc(new_whitelist_max * sizeof *whitelist);
       if (new_whitelist == NULL)
 	return control_write_status(uct, 522, "no more room in whitelist", "");
@@ -193,7 +215,7 @@ control_drop_accept(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
 	}
       --whitelist_len;
     }
-  control_write_status(uct, 200, "ok");
+  control_write_status(uct, 200, "ok", "");
   return;
 }
 
@@ -211,8 +233,6 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
       unixconn_write(uct, ip->name);
       if (ip->mdns_listen)
 	unixconn_write(uct, " +mdns");
-      if (ip->dns_listen)
-	unixconn_write(uct, " +dns");
       unixconn_write("\n");
     }
   for (ix = 0; ix < whitelist_len; ix++)
@@ -234,7 +254,7 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
 // Terminate the connection.
 
 void
-control_quit(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
+control_end(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
   unixconn_write(uct, "200 goodbye!\n");
   unixconn_deref(uct);
@@ -246,25 +266,18 @@ typedef enum {
 } code_t;
 
 control_command_t control_commands[] = {
-  { "add-dns",     ADD_DNS,     1, control_add_dns,     [ARGTYPE_INTERFACE] },
-  { "drop-dns",    DROP_DNS,    1, control_drop_dns,    [ARGTYPE_INTERFACE] },
-  { "add-mdns",    ADD_MDNS,    1, control_add_mdns,    [ARGTYPE_INTERFACE] },
-  { "drop-mdns",   DROP_MDNS,   1, control_drop_mdns,   [ARGTYPE_INTERFACE] },
-  { "add-accept",  ADD_ACCEPT,  2, control_add_accept,  [ARGTYPE_IPADDR, 
-							 ARGTYPE_PORT] },
-  { "drop-accept", DROP_ACCEPT, 2, control_drop_accept, [ARGTYPE_IPADDR,
-							 ARGTYPE_PORT] },
-  { "dump-status", DUMP_STATUS, 0, control_dump_status, [] },
-  { "end",         END,         0, control_end,         [] },
-  { NULL,          NONE,        0, [] } };
+  { "add-dns",     ADD_DNS,     1, control_add_dns,     {ARGTYPE_INTERFACE} },
+  { "drop-dns",    DROP_DNS,    1, control_drop_dns,    {ARGTYPE_INTERFACE} },
+  { "add-mdns",    ADD_MDNS,    1, control_add_mdns,    {ARGTYPE_INTERFACE} },
+  { "drop-mdns",   DROP_MDNS,   1, control_drop_mdns,   {ARGTYPE_INTERFACE} },
+  { "add-accept",  ADD_ACCEPT,  2, control_add_accept,  {ARGTYPE_IPADDR, 
+							 ARGTYPE_PORT} },
+  { "drop-accept", DROP_ACCEPT, 2, control_drop_accept, {ARGTYPE_IPADDR,
+							 ARGTYPE_PORT} },
+  { "dump-status", DUMP_STATUS, 0, control_dump_status, {} },
+  { "end",         END,         0, control_end,         {} },
+  { NULL,          NONE,        0, (void *)0, {} } };
 
-// Called when a line of text comes in from the client
-void
-control_read(unixconn_t *uct, char *line, control_commands)
-{
-  pcmd_dispatch(uct, line);
-}
-      
 /* Local Variables:  */
 /* mode:C */
 /* c-file-style:"gnu" */

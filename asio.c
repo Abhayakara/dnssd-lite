@@ -99,13 +99,13 @@ asio_add(int *rv, void *thunk, int sock, void (*thunk_free)(void *))
 	  if (pollers != NULL)
 	    {
 	      memcpy(new_pollers, pollers, max_pollers * sizeof *new_pollers);
-	      free(old_pollers);
+	      free(pollers);
 	      memset(new_pollers + max_pollers * sizeof *pollers,
 		     POLLFD_INC * sizeof *new_pollers, 0);
 	    }
 	  else
 	    {
-	      memset(new_pollers + new_max_pollers * sizeof *new_pollers, 0);
+	      memset(new_pollers, new_max_pollers * sizeof *new_pollers, 0);
 	    }
 
 	  max_pollers = new_max_pollers;
@@ -115,9 +115,9 @@ asio_add(int *rv, void *thunk, int sock, void (*thunk_free)(void *))
       next_open_slot = num_pollers;
     }
 
-  pollers[next_open_slot].fd = socket
+  pollers[next_open_slot].fd = sock;
   pollers[next_open_slot].events = 0;
-  pollers[next_open_slot].thunk = poller;
+  pollers[next_open_slot].thunk = thunk;
   pollers[next_open_slot].thunk_free = thunk_free;
   pollers[next_open_slot].refcount = 1;
   if (next_open_slot != num_pollers)
@@ -137,7 +137,8 @@ asio_add(int *rv, void *thunk, int sock, void (*thunk_free)(void *))
       num_pollers++;
     }
   
-  return num_pollers - 1;
+  *rv = num_pollers - 1;
+  return NULL;
 }
 
 // Remvoe a poller froma a slot
@@ -145,10 +146,11 @@ void
 asio_deref(int slot)
 {
   // No way to signal an error here.   Fix?
-  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1 || pollers[slot].refcount < 1)
+  if (slot < 0 || slot >= num_pollers || 
+      pollers[slot].fd == -1 || pollers[slot].refcount < 1)
     {
       syslog(LOG_ERR, "bogus call to asio_deref: slot %d fd %d refcount %d",
-	     slot, pollers[box.fd], pollers[slot].refcount);
+	     slot, pollers[slot].fd, pollers[slot].refcount);
       return;
     }
 
@@ -178,11 +180,11 @@ asio_set_handler(int slot, int events, asio_event_handler_t handler)
     pollers[slot].pollhup = handler;
   if (events & POLLIN)
     pollers[slot].pollin = handler;
-  if (events & POLLINVAL)
-    pollers[slot].pollinval = handler;
+  if (events & POLLNVAL)
+    pollers[slot].pollnval = handler;
   if (events & POLLOUT)
     pollers[slot].pollout = handler;
-  if (events & pollpri)
+  if (events & POLLPRI)
     pollers[slot].pollpri = handler;
   pollers[slot].events |= events;
   return NULL;
@@ -205,11 +207,11 @@ asio_clear_handler(int slot, int events, asio_event_handler_t handler)
     pollers[slot].pollhup = 0;
   if (events & POLLIN)
     pollers[slot].pollin = 0;
-  if (events & POLLINVAL)
-    pollers[slot].pollinval = 0;
+  if (events & POLLNVAL)
+    pollers[slot].pollnval = 0;
   if (events & POLLOUT)
     pollers[slot].pollout = 0;
-  if (events & pollpri)
+  if (events & POLLPRI)
     pollers[slot].pollpri = 0;
   pollers[slot].events &= ~events;
   return NULL;
@@ -239,7 +241,7 @@ asio_poll_once(int timeout)
   if (nfds == 0)
     return "asio_poll_once: done";
 
-  status = poll(pollfds, nfds, timeout);
+  count = poll(pollfds, nfds, timeout);
 
   if (count < 0)
     {
@@ -257,17 +259,18 @@ asio_poll_once(int timeout)
       if (revents)
 	{
 	  if ((revents & POLLERR) && pollers[slot].pollerr != NULL)
-	    pollers[slot].pollerr(slot, fd, revents & POLLERR, pollers[slot].thunk);
+	    pollers[slot].pollerr(slot, revents & POLLERR, pollers[slot].thunk);
 	  if ((revents & POLLHUP) && pollers[slot].pollhup != NULL)
-	    pollers[slot].pollhup(slot, fd, revents & POLLHUP, pollers[slot].thunk);
+	    pollers[slot].pollhup(slot, revents & POLLHUP, pollers[slot].thunk);
 	  if ((revents & POLLIN) && pollers[slot].pollin != NULL)
-	    pollers[slot].pollin(slot, fd, revents & POLLIN, pollers[slot].thunk);
-	  if ((revents & POLLINVAL) && pollers[slot].pollinval != NULL)
-	    pollers[slot].pollinval(slot, fd, revents & POLLINVAL, pollers[slot].thunk);
+	    pollers[slot].pollin(slot, revents & POLLIN, pollers[slot].thunk);
+	  if ((revents & POLLNVAL) && pollers[slot].pollnval != NULL)
+	    pollers[slot].pollnval(slot, revents & POLLNVAL,
+				    pollers[slot].thunk);
 	  if ((revents & POLLOUT) && pollers[slot].pollout != NULL)
-	    pollers[slot].pollout(slot, fd, revents & POLLOUT, pollers[slot].thunk);
-	  if ((revents & pollpri) && pollers[slot].pollpri != NULL)
-	    pollers[slot].pollpri(slot, fd, revents & pollpri, pollers[slot].thunk);
+	    pollers[slot].pollout(slot, revents & POLLOUT, pollers[slot].thunk);
+	  if ((revents & POLLPRI) && pollers[slot].pollpri != NULL)
+	    pollers[slot].pollpri(slot, revents & POLLPRI, pollers[slot].thunk);
 	  --count;
 	}
     }

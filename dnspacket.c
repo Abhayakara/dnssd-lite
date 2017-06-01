@@ -40,6 +40,7 @@
 
 #include "dnssd-relay.h"
 	     
+#if 0
 int
 query_parse(query_t *query, unsigned char *buf, ssize_t len)
 {
@@ -178,6 +179,7 @@ query_parse(query_t *query, unsigned char *buf, ssize_t len)
     query->xid = ID(buf);
   return offset;
 }
+#endif
 
 int
 parse_name(char *namebuf, int max,

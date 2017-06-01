@@ -26,6 +26,16 @@ typedef union {
     struct sockaddr_in6 in6;
 } address_t;
 
+typedef struct unixconn {
+  int slot;
+  char buf[512];
+  int buflen;
+  char *path;
+  char *remote;
+  void (*listen_handler)(struct unixconn *uct);
+  void (*read_handler)(struct unixconn *uct, char *data);
+} unixconn_t;
+
 typedef struct interface {
   struct interface *next;
 
@@ -46,14 +56,18 @@ typedef struct interface {
   address_t **addresses;
 
   // If nonzero, interface is activated for mDNS relay
-  int enabled;
+  int mdns_listen;
+
+  // Port to which to send DNS-over-TCP messages requesting mDNS queries
+  // on this interface; value is zero if mdns isn't enabled on this interface.
+  int dns_port;
 } interface_t;
 
 // // Structures required for pcmd.c, line-oriented command protocol parser
 
 // Types of arguments supported on command lines.
 typedef union arg {
-  interface_t interface;
+  interface_t *interface;
   address_t addr;
   u_int16_t port;
 } arg_t;
@@ -68,32 +82,32 @@ typedef enum {
 // Description of a command: its name, am integer code for that name,
 // number of arguments expected, function to call to implement it,
 // and an array containing the expected type of each argument.
-typedef struct {
+typedef struct control_command control_command_t;
+struct control_command {
   char *name;
-  code_t code;
+  int code;
   int nargs;
-  void (*implementation)(unixconn_t *uct, int argc, arg_t *args);
+  void (*implementation)(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args);
   argtype_t argtype[MAX_CHUNKS - 1];
-} control_command_t;
+};
+
+typedef void (*asio_event_handler_t)(int slot, int events, void *thunk);
+
+typedef struct {
+  int fd;
+  int events;
+  void *thunk;
+  void (*thunk_free)(void *);
+  int refcount;
+  asio_event_handler_t pollin, pollout, pollpri, pollerr, pollhup, pollnval;
+} asio_state_t;
 
 /* dnssd-relay.c */
 extern interface_t *interfaces;
-int response_read(query_t *query);
-void query_read(int family, int sock);
-int add_query(query_t *query);
-query_t *query_allocate(const unsigned char *buf, ssize_t len);
 
 /* dnspacket.c */
-int query_parse(query_t *query, unsigned char *buf, ssize_t len);
-
-int parse_name(char *namebuf, int max,
-	       const unsigned char *buf, int offset, ssize_t len);
 
 /* dnsdump.c */
-const char *classname(int class);
-int query_dump(unsigned char *buf, ssize_t len);
-int dump_rrdata(int class, int type, int ttl, int offset, ssize_t len,
-		const unsigned char *message, ssize_t max);
 
 #define ID(buf) (((buf)[0] << 8) | ((buf)[1]))
 #define QR(buf) ((buf)[2] >> 7)

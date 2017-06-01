@@ -52,12 +52,13 @@ const char *
 pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands)
 {
   const char *argv[MAX_CHUNKS];
-  arg_t argsp[MAX_CHUNKS];
+  arg_t args[MAX_CHUNKS];
   int argc, i;
   const char *start;
   control_command_t *command = NULL;
+  unixconn_t *uct = thunk;
 
-  start = line
+  start = line;
   argc = 0;
   
   // tokenize
@@ -85,7 +86,7 @@ pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands)
     {
       if (!strcmp(control_commands[i].name, argv[0]))
 	{
-	  command = *control_commands[i];
+	  command = &control_commands[i];
 	  break;
 	}
     }
@@ -120,20 +121,21 @@ pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands)
 	  break;
 
 	case ARGTYPE_IPADDR:
+	  memset(&args[i], sizeof args[i], 0);
+
 	  // IPv6 address?
 	  if (strchr(arg, ':') != NULL)
 	    {
-	      if (inet_pton(AF_INET6, arg, &addr.in6.in6_addr) != 1)
+	      if (inet_pton(AF_INET6, arg, &addr.in6.sin6_addr) != 1)
 		return "501 bad IPv6 (?) address\n";
-	      address.sa.sa_family = AF_INET6;
+	      args[i].addr.sa.sa_family = AF_INET6;
 	    }
 	  else
 	    {
-	      if (inet_pton(AF_INET, arg, &addr.in.in_addr) != 1)
+	      if (inet_pton(AF_INET, arg, &addr.in.sin_addr) != 1)
 		return "501 bad IPv4 (?) address\n";
-	      address.sa.sa_family = AF_INET;
+	      args[i].addr.sa.sa_family = AF_INET;
 	    }
-	  args[i].addr = address;
 	  break;
 
 	case ARGTYPE_PORT:
