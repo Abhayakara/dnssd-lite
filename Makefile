@@ -1,4 +1,10 @@
-CFLAGS=-g -O0 -fno-show-column -Wno-implicit -Wno-int-conversion -fno-diagnostics-fixit-info -fno-caret-diagnostics # -Wall -Werror
+CFLAGS=-g -O0 -fno-show-column -Wall -Werror
+
+#%.o:	%.c
+#	$(CC) -c $(CFLAGS) -aux-info /tmp/foo.i $<
+#	sed -n -e "/* $<:.*:NF */p" /tmp/foo.i >/tmp/foo.j
+#	if [ ! -f $*-proto.h ] || cmp /tmp/foo.j $*-proto.h; then \
+#	  mv /tmp/foo.j $*-proto.h; fi
 
 dnssd-relay:	dnssd-relay.o asio.o control.o dnsdump.o dnspacket.o mdns.o \
 		pcmd.o tdns.o unixconn.o

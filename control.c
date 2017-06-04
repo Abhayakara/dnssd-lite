@@ -59,7 +59,7 @@ control_write_status(unixconn_t *uct, int code, const char *message, const char 
 
 // Called when a line of text comes in from the client
 void
-control_read(unixconn_t *uct, char *line, control_commands)
+control_read(unixconn_t *uct, char *line)
 {
   pcmd_dispatch(uct, line);
 }

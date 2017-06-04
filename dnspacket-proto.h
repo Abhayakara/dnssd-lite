@@ -1,0 +1,1 @@
+/* dnspacket.c:185:NF */ extern int parse_name (char *namebuf, int max, const unsigned char *buf, int offset, ssize_t len); /* (namebuf, max, buf, offset, len) char *namebuf; int max; const unsigned char *buf; int offset; ssize_t len; */

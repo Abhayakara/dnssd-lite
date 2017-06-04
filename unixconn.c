@@ -235,7 +235,7 @@ unixconn_listen_handler(int slot, int events, void *thunk)
 // through the rv pointer.
 
 const char *
-unixconn_socket_create(unixconn_t *rv, const char *path)
+unixconn_socket_create(unixconn_t **rv, const char *path)
 {
   struct sockaddr_un sockname;
   int len;
@@ -257,9 +257,10 @@ unixconn_socket_create(unixconn_t *rv, const char *path)
     return strerror(errno);
 
   strcpy(sockname.sun_path, path);
-  sockname.sun_len = len + (sizeof sockname) - (sizeof sockname.sun_path);
+  len = len + (sizeof sockname) - (sizeof sockname.sun_path);
+  // XXX sockname.sun_len = len;
   sockname.sun_family = AF_UNIX;
-  result = bind(sock, (struct sockaddr *)&sockname, sockname.sun_len);
+  result = bind(sock, (struct sockaddr *)&sockname, len);
   if (result < 0)
     {
       close(sock);
@@ -292,7 +293,7 @@ unixconn_socket_create(unixconn_t *rv, const char *path)
 // Provide a function to call when a listen completes.
 const char *
 unixconn_set_listen_handler(unixconn_t *uct,
-			    char *(*listen_handler)(unixconn_t *))
+			    void (*listen_handler)(unixconn_t *))
 {
   if (uct == NULL)
     return "unixconn_set_listen_handler: invalid unixconn_t";
@@ -303,7 +304,7 @@ unixconn_set_listen_handler(unixconn_t *uct,
 // Provide a function to call when a listen completes.
 const char *
 unixconn_set_read_handler(unixconn_t *uct,
-			  char *(*read_handler)(unixconn_t *, char *))
+			  void (*read_handler)(unixconn_t *, char *))
 {
   if (uct == NULL)
     return "unixconn_set_read_handler: invalid unixconn_t";

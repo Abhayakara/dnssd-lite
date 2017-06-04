@@ -133,6 +133,16 @@ extern interface_t *interfaces;
 #define NOTIMPL		4
 #define REFUSED		5
 
+#include "asio-proto.h"
+#include "control-proto.h"
+#include "dnsdump-proto.h"
+#include "dnspacket-proto.h"
+#include "dnssd-relay-proto.h"
+#include "mdns-proto.h"
+#include "pcmd-proto.h"
+#include "tdns-proto.h"
+#include "unixconn-proto.h"
+
 /* Local Variables:  */
 /* mode:C */
 /* c-file-style:"gnu" */

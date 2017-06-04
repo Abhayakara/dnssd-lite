@@ -1,0 +1,1 @@
+/* pcmd.c:52:NF */ extern const char *pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands); /* (thunk, line, control_commands) void *thunk; char *line; control_command_t *control_commands; */
