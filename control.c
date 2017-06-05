@@ -111,7 +111,7 @@ control_start(const char *path)
   do {
     errstr = asio_poll_once(-1);
   } while (errstr == NULL);
-  return NULL; /*NOTREACHED*/
+  return errstr; /*NOTREACHED*/
 }
 
 // add-dns <interface>

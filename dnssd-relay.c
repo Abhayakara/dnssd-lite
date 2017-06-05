@@ -104,6 +104,7 @@ main(int argc, char **argv)
   interface_t *ip;
   int salen;
   int i;
+  const char *errstr;
 
   openlog("dnssd-relay", LOG_NDELAY|LOG_PID|LOG_PERROR, LOG_DAEMON);
 
@@ -237,6 +238,10 @@ main(int argc, char **argv)
 	}
     }
 #endif
+
+  errstr = control_start("/tmp/dnssd-relay-sock");
+  if (errstr != NULL)
+    syslog(LOG_ERR, "control_start: %s", errstr);
 
   return 0;
 }

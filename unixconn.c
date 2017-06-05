@@ -41,6 +41,50 @@
 
 #include "dnssd-relay.h"
 	     
+// Dereference function for unixconn_t.  The refcount is handled by
+// asio; all we do is call asio_deref, and if the refcount goes to
+// zero, asio_deref calls unixconn_uct_free.
+void
+unixconn_deref(unixconn_t *uct)
+{
+  asio_deref(uct->slot);
+}
+
+// We assume that writes won't block, which doesn't really work if we
+// aren't doing a lockstep protocol.  But we are.
+const char *
+unixconn_write(unixconn_t *uct, char *str)
+{
+  int i = uct->outbuflen;
+  char *s = str;
+  const char *errstr;
+
+  // Line buffer output
+  while (i < sizeof uct->outbuf && *s)
+    {
+      uct->outbuf[i] = *s;
+      i++;
+      if (*s == '\n')
+	{
+	  int result;
+	  errstr = asio_write(&result, uct->slot, uct->outbuf, i);
+	  if (errstr != NULL)
+	    return errstr;
+	  if (result != i)
+	    {
+	      memmove(&uct->outbuf[0], &uct->outbuf[result], i - result);
+	      i -= result;
+	    }
+	  else
+	    i = 0;
+	}
+      s++;
+    }
+
+  uct->outbuflen = i;
+  return NULL;
+}
+
 // Free function for the unixconn_t that we pass to the async i/o package
 void
 unixconn_free_uct(unixconn_t *uct)
@@ -155,10 +199,10 @@ unixconn_read_handler(int slot, int events, void *thunk)
 	eol = memchr(resid, '\n', status);
 	if (eol == NULL)
 	  {
-	    if (status + uct->buflen > sizeof uct->buf)
+	    if (status + uct->inbuflen > sizeof uct->inbuf)
 	      goto buffer_overflow;
-	    memcpy(uct->buf + uct->buflen, resid, status);
-	    uct->buflen += status;
+	    memcpy(uct->inbuf + uct->inbuflen, resid, status);
+	    uct->inbuflen += status;
 	    return;
 	  }
 
@@ -166,10 +210,10 @@ unixconn_read_handler(int slot, int events, void *thunk)
 	resid = eol + 1;
 	if (len > 0 && eol[-1] == '\r')
 	  len--;
-	if (uct->buflen != 0)
+	if (uct->inbuflen != 0)
 	  {
 	    // The line could still be too long.
-	    if (len + uct->buflen + 1 > sizeof uct->buf)
+	    if (len + uct->inbuflen + 1 > sizeof uct->inbuf)
 	      {
 	      buffer_overflow:
 		syslog(LOG_ERR, "unixconn_read_handler: buffer overflow from %s:%s",
@@ -178,14 +222,14 @@ unixconn_read_handler(int slot, int events, void *thunk)
 		asio_deref(slot);
 		return;
 	      }
-	    memcpy(uct->buf + uct->buflen, resid, len);
-	    uct->buflen += len;
-	    uct->buf[uct->buflen] = 0;
+	    memcpy(uct->inbuf + uct->inbuflen, resid, len);
+	    uct->inbuflen += len;
+	    uct->inbuf[uct->inbuflen] = 0;
 
 	    if (uct->read_handler != NULL)
-	      uct->read_handler(uct, uct->buf);
+	      uct->read_handler(uct, uct->inbuf);
 
-	    uct->buflen = 0;
+	    uct->inbuflen = 0;
 	  }
 	else
 	  {
@@ -209,9 +253,10 @@ unixconn_listen_handler(int slot, int events, void *thunk)
   unixconn_t *rv;
   int aslot;
   struct sockaddr junk;
+  socklen_t socklen = sizeof junk;
   const char *errstr;
 
-  errstr = asio_accept(&aslot, &junk, sizeof junk);
+  errstr = asio_accept(&aslot, slot, &junk, &socklen);
   if (errstr != NULL)
     {
       syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);

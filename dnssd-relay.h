@@ -28,8 +28,10 @@ typedef union {
 
 typedef struct unixconn {
   int slot;
-  char buf[512];
-  int buflen;
+  char inbuf[512];
+  int inbuflen;
+  char outbuf[512];
+  int outbuflen;
   char *path;
   char *remote;
   void (*listen_handler)(struct unixconn *uct);

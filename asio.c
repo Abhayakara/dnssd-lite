@@ -60,7 +60,7 @@ const char *
 asio_set_thunk(int slot, void *thunk, void (*thunk_free)(void *))
 {
   if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
-    return "set_event_handler: invalid slot";
+    return "set_thunk: invalid slot";
   
   pollers[slot].thunk = thunk;
   pollers[slot].thunk_free = thunk_free;
@@ -151,7 +151,23 @@ asio_add(int *rv, int sock)
   return NULL;
 }
 
-// Remvoe a poller froma a slot
+// Disable polling on this slot
+void
+asio_disable(int slot)
+{
+  if (slot < 0 || slot >= num_pollers || 
+      pollers[slot].fd == -1 || pollers[slot].refcount < 1)
+    {
+      syslog(LOG_ERR, "bogus call to asio_disable: slot %d fd %d refcount %d",
+	     slot, pollers[slot].fd, pollers[slot].refcount);
+      return;
+    }
+
+  // This clears all the event handlers and disables polling for all events.
+  asio_clear_handler(slot, pollers[slot].events);
+}
+
+// Remove a poller from a slot
 void
 asio_deref(int slot)
 {
@@ -177,7 +193,7 @@ asio_deref(int slot)
 }
 
 // Provide an event handler for all of the event types in the specified mask
-char *
+const char *
 asio_set_handler(int slot, int events, asio_event_handler_t handler)
 {
   if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
@@ -203,8 +219,8 @@ asio_set_handler(int slot, int events, asio_event_handler_t handler)
 // Clear an event handler for all the event types in the specified mask
 // E.g., we are only interested in whether a socket is writable if we have
 // something to write.
-char *
-asio_clear_handler(int slot, int events, asio_event_handler_t handler)
+const char *
+asio_clear_handler(int slot, int events)
 {
   if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
     return "clear_event_handler: invalid slot";
@@ -228,7 +244,7 @@ asio_clear_handler(int slot, int events, asio_event_handler_t handler)
 }
 
 // Do a single poll and event dispatch cycle.
-char *
+const char *
 asio_poll_once(int timeout)
 {
   int nfds = 0;
@@ -284,6 +300,57 @@ asio_poll_once(int timeout)
 	}
     }
  return NULL;
+}
+
+// Read from a slot
+const char *
+asio_read(int *len, int slot, char *buf, int max)
+{
+  int status;
+  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
+    return "asio_read: invalid slot";
+
+  status = read(pollers[slot].fd, buf, max);
+  if (status < 0)
+    return strerror(errno);
+  *len = status;
+  return NULL;
+}
+
+// Write to a slot
+const char *
+asio_write(int *len, int slot, char *buf, int max)
+{
+  int status;
+  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
+    return "asio_write: invalid slot";
+
+  status = write(pollers[slot].fd, buf, max);
+  if (status < 0)
+    return strerror(errno);
+  *len = status;
+  return NULL;
+}
+
+// Accept a connection, make a slot for it
+const char *
+asio_accept(int *rv, int slot, struct sockaddr *remote, socklen_t *remote_len)
+{
+  int status;
+  int new_slot;
+  const char *errstr;
+  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
+    return "asio_read: invalid slot";
+
+  status = accept(pollers[slot].fd, remote, remote_len);
+  if (status < 0)
+    return strerror(errno);
+  
+  errstr = asio_add(&new_slot, status);
+  if (errstr != NULL)
+    return errstr;
+  *rv = new_slot;
+  return NULL;
 }
 
 /* Local Variables:  */
