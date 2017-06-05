@@ -48,12 +48,31 @@
 address_t *whitelist;
 int whitelist_len, whitelist_max;
 
+typedef enum {
+  NONE, ADD_DNS, DROP_DNS, ADD_MDNS, DROP_MDNS, ADD_ACCEPT, DROP_ACCEPT,
+  DUMP_STATUS, END
+} code_t;
+
+control_command_t control_commands[] = {
+  { "add-dns",     ADD_DNS,     1, control_add_dns,     {ARGTYPE_INTERFACE} },
+  { "drop-dns",    DROP_DNS,    1, control_drop_dns,    {ARGTYPE_INTERFACE} },
+  { "add-mdns",    ADD_MDNS,    1, control_add_mdns,    {ARGTYPE_INTERFACE} },
+  { "drop-mdns",   DROP_MDNS,   1, control_drop_mdns,   {ARGTYPE_INTERFACE} },
+  { "add-accept",  ADD_ACCEPT,  2, control_add_accept,  {ARGTYPE_IPADDR, 
+							 ARGTYPE_PORT} },
+  { "drop-accept", DROP_ACCEPT, 2, control_drop_accept, {ARGTYPE_IPADDR,
+							 ARGTYPE_PORT} },
+  { "dump-status", DUMP_STATUS, 0, control_dump_status, {} },
+  { "end",         END,         0, control_end,         {} },
+  { NULL,          NONE,        0, (void *)0, {} } };
+
 // Write a response to the client
 void
 control_write_status(unixconn_t *uct, int code, const char *message, const char *more)
 {
   char buf[256];
-  snprintf(buf, "%03d %s%s%s\n", code, message, more[0] == 0 ? "" : ": ", more);
+  snprintf(buf, sizeof buf, 
+	   "%03d %s%s%s\n", code, message, more[0] == 0 ? "" : ": ", more);
   unixconn_write(uct, buf);
 }
 
@@ -61,7 +80,7 @@ control_write_status(unixconn_t *uct, int code, const char *message, const char 
 void
 control_read(unixconn_t *uct, char *line)
 {
-  pcmd_dispatch(uct, line);
+  pcmd_dispatch(uct, line, control_commands);
 }
       
 // Called when a new client connects.
@@ -233,18 +252,19 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
       unixconn_write(uct, ip->name);
       if (ip->mdns_listen)
 	unixconn_write(uct, " +mdns");
-      unixconn_write("\n");
+      unixconn_write(uct, "\n");
     }
   for (ix = 0; ix < whitelist_len; ix++)
     {
       char nbuf[64];
-      int len = ntop(&nbuf, sizeof nbuf, &whitelist[ix]);
+      int len;
+      len = ntop(nbuf, sizeof nbuf, &whitelist[ix]);
       if (ix + 1 == whitelist_len)
 	unixconn_write(uct, "200 ");
       else
 	unixconn_write(uct, "200-");
       unixconn_write(uct, nbuf);
-      unixconn_write("\n");
+      unixconn_write(uct, "\n");
     }
   if (whitelist_len == 0)
     unixconn_write(uct, "200 no whitelist entries\n");
@@ -259,24 +279,6 @@ control_end(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
   unixconn_write(uct, "200 goodbye!\n");
   unixconn_deref(uct);
 }
-
-typedef enum {
-  NONE, ADD_DNS, DROP_DNS, ADD_MDNS, DROP_MDNS, ADD_ACCEPT, DROP_ACCEPT,
-  DUMP_STATUS, END
-} code_t;
-
-control_command_t control_commands[] = {
-  { "add-dns",     ADD_DNS,     1, control_add_dns,     {ARGTYPE_INTERFACE} },
-  { "drop-dns",    DROP_DNS,    1, control_drop_dns,    {ARGTYPE_INTERFACE} },
-  { "add-mdns",    ADD_MDNS,    1, control_add_mdns,    {ARGTYPE_INTERFACE} },
-  { "drop-mdns",   DROP_MDNS,   1, control_drop_mdns,   {ARGTYPE_INTERFACE} },
-  { "add-accept",  ADD_ACCEPT,  2, control_add_accept,  {ARGTYPE_IPADDR, 
-							 ARGTYPE_PORT} },
-  { "drop-accept", DROP_ACCEPT, 2, control_drop_accept, {ARGTYPE_IPADDR,
-							 ARGTYPE_PORT} },
-  { "dump-status", DUMP_STATUS, 0, control_dump_status, {} },
-  { "end",         END,         0, control_end,         {} },
-  { NULL,          NONE,        0, (void *)0, {} } };
 
 /* Local Variables:  */
 /* mode:C */

@@ -71,7 +71,6 @@ unixconn_make(unixconn_t **rv, int slot, const char *path, const char *remote,
 {
   const char *errstr;
   int len = strlen(path);
-  char *name;
   unixconn_t *uct = malloc(sizeof *uct);
 
   if (uct == NULL)
@@ -96,7 +95,7 @@ unixconn_make(unixconn_t **rv, int slot, const char *path, const char *remote,
 
   uct->slot = slot;
 
-  errstr = asio_set_thunk(slot, uct, unixconn_free_uct);
+  errstr = asio_set_thunk(slot, uct, (void (*)(void *))unixconn_free_uct);
   if (errstr != NULL)
     {
       unixconn_free_uct(uct);
@@ -136,14 +135,15 @@ unixconn_read_handler(int slot, int events, void *thunk)
   int status, len;
   char *eol;
   char ibuf[256];
+  const char *errstr;
 
   // read text from the socket; complete an unfinished line if there
   // is one hanging from a previous read.  later: generalize this into
   // its own module so we can use it for tcp connections, etc?
-  status = asio_read(slot, ibuf, sizeof ibuf);
-  if (status < 0)
+  errstr = asio_read(&status, slot, ibuf, sizeof ibuf);
+  if (errstr != NULL)
     {
-      syslog(LOG_ERR, "unixconn_read_handler: %m");
+      syslog(LOG_ERR, "unixconn_read_handler: %s", errstr);
       return;
     }
   
@@ -225,6 +225,13 @@ unixconn_listen_handler(int slot, int events, void *thunk)
       return;
     }
   uct->listen_handler(rv);
+
+  errstr = asio_set_thunk(slot, rv, (void (*)(void *))unixconn_free_uct);
+  if (errstr != NULL)
+    {
+      unixconn_free_uct(uct);
+      syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
+    }
 }
   
 // Create a unix-domain stream socket, bind it to the specified path,

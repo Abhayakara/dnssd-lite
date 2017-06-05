@@ -56,9 +56,20 @@ int next_open_slot;
 
 #define POLLFD_INC 10
 
+const char *
+asio_set_thunk(int slot, void *thunk, void (*thunk_free)(void *))
+{
+  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
+    return "set_event_handler: invalid slot";
+  
+  pollers[slot].thunk = thunk;
+  pollers[slot].thunk_free = thunk_free;
+  return NULL;
+}
+
 // Register a poller for a particular file descriptor
 const char *
-asio_add(int *rv, void *thunk, int sock, void (*thunk_free)(void *))
+asio_add(int *rv, int sock)
 {
   if (rv == NULL)
     return "add_poller: no return value store.";
@@ -115,10 +126,9 @@ asio_add(int *rv, void *thunk, int sock, void (*thunk_free)(void *))
       next_open_slot = num_pollers;
     }
 
+  memset(&pollers[next_open_slot], 0, sizeof pollers[next_open_slot]);
   pollers[next_open_slot].fd = sock;
   pollers[next_open_slot].events = 0;
-  pollers[next_open_slot].thunk = thunk;
-  pollers[next_open_slot].thunk_free = thunk_free;
   pollers[next_open_slot].refcount = 1;
   if (next_open_slot != num_pollers)
     {
@@ -255,7 +265,6 @@ asio_poll_once(int timeout)
     {
       int slot = pollmap[i];
       int revents = pollfds[i].revents;
-      int fd = pollfds[i].fd;
       if (revents)
 	{
 	  if ((revents & POLLERR) && pollers[slot].pollerr != NULL)
