@@ -80,7 +80,10 @@ control_write_status(unixconn_t *uct, int code, const char *message, const char 
 void
 control_read(unixconn_t *uct, char *line)
 {
-  pcmd_dispatch(uct, line, control_commands);
+  const char *errstr;
+  errstr = pcmd_dispatch(uct, line, control_commands);
+  if (errstr != NULL)
+    unixconn_write(uct, errstr);
 }
       
 // Called when a new client connects.
@@ -101,17 +104,17 @@ control_start(const char *path)
   const char *errstr;
 
   errstr = unixconn_socket_create(&uct, path);
-  if (errstr == NULL)
+  if (errstr != NULL)
     return errstr;
 
   errstr = unixconn_set_listen_handler(uct, control_listen);
-  if (errstr == NULL)
+  if (errstr != NULL)
     return errstr;
 
   do {
     errstr = asio_poll_once(-1);
   } while (errstr == NULL);
-  return errstr; /*NOTREACHED*/
+  return errstr;
 }
 
 // add-dns <interface>
@@ -168,11 +171,13 @@ control_digest_addr(address_t *addr, arg_t *args)
     {
       addr->in.sin_addr = args[0].addr.in.sin_addr;
       addr->in.sin_port = htons(args[1].port);
+      addr->in.sin_family = AF_INET;
     }
   else // we can assume AF_INET6
     {
       addr->in6.sin6_addr = args[0].addr.in6.sin6_addr;
       addr->in6.sin6_port = htons(args[1].port);
+      addr->in.sin_family = AF_INET6;
     }
   for (ix = 0; ix < whitelist_len; ix++)
     {
@@ -213,6 +218,7 @@ control_add_accept(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *arg
     }
   memcpy(&whitelist[whitelist_len], &addr, sizeof addr);
   whitelist_len++;
+  control_write_status(uct, 500, "ok", "");
 }
 
 // drop-accept <addr> <port>

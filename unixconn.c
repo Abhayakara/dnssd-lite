@@ -53,10 +53,10 @@ unixconn_deref(unixconn_t *uct)
 // We assume that writes won't block, which doesn't really work if we
 // aren't doing a lockstep protocol.  But we are.
 const char *
-unixconn_write(unixconn_t *uct, char *str)
+unixconn_write(unixconn_t *uct, const char *str)
 {
   int i = uct->outbuflen;
-  char *s = str;
+  const char *s = str;
   const char *errstr;
 
   // Line buffer output
@@ -192,7 +192,7 @@ unixconn_read_handler(int slot, int events, void *thunk)
     }
   
   { // invalidate resid after while loop exits.
-    char * resid = &ibuf[0];
+    char *resid = &ibuf[0];
 
     while (resid - &ibuf[0] < status)
       {
@@ -207,9 +207,14 @@ unixconn_read_handler(int slot, int events, void *thunk)
 	  }
 
 	len = eol - resid;
-	resid = eol + 1;
 	if (len > 0 && eol[-1] == '\r')
-	  len--;
+	  {
+	    len--;
+	    eol[-1] = 0;
+	  }
+	else
+	  eol[0] = 0;
+
 	if (uct->inbuflen != 0)
 	  {
 	    // The line could still be too long.
@@ -234,10 +239,7 @@ unixconn_read_handler(int slot, int events, void *thunk)
 	else
 	  {
 	    if (uct->read_handler != NULL)
-	      {
-		*eol = 0;
-		uct->read_handler(uct, resid);
-	      }
+	      uct->read_handler(uct, resid);
 	  }
 
 	resid = eol + 1;

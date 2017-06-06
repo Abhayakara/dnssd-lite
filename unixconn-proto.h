@@ -5,5 +5,5 @@
 /* unixconn.c:238:NF */ extern const char *unixconn_socket_create (unixconn_t **rv, const char *path); /* (rv, path) unixconn_t **rv; const char *path; */
 /* unixconn.c:295:NF */ extern const char *unixconn_set_listen_handler (unixconn_t *uct, void (*listen_handler) (unixconn_t *)); /* (uct, listen_handler) unixconn_t *uct; void (*listen_handler)(); */
 /* unixconn.c:306:NF */ extern const char *unixconn_set_read_handler (unixconn_t *uct, void (*read_handler) (unixconn_t *, char *)); /* (uct, read_handler) unixconn_t *uct; void (*read_handler)(); */
-const char *unixconn_write(unixconn_t *, char *);
+const char *unixconn_write(unixconn_t *, const char *);
 void unixconn_deref(unixconn_t *);

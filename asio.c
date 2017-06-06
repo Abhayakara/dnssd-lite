@@ -122,8 +122,8 @@ asio_add(int *rv, int sock)
 	  max_pollers = new_max_pollers;
 	  pollfds = new_pollfds;
 	  pollers = new_pollers;
+	  pollmap = new_pollmap;
 	}      
-      next_open_slot = num_pollers;
     }
 
   memset(&pollers[next_open_slot], 0, sizeof pollers[next_open_slot]);
@@ -135,8 +135,8 @@ asio_add(int *rv, int sock)
       next_open_slot++;
       while (next_open_slot < num_pollers)
 	{
-	  if (pollers[next_open_slot].fd != -1 ||
-	      pollers[next_open_slot].refcount != 0)
+	  if (pollers[next_open_slot].fd == -1 &&
+	      pollers[next_open_slot].refcount == 0)
 	    break;
 	  next_open_slot++;
 	}
