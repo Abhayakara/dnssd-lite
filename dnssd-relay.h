@@ -38,6 +38,16 @@ typedef struct unixconn {
   void (*read_handler)(struct unixconn *uct, char *data);
 } unixconn_t;
 
+typedef struct tdns {
+  struct tdns *next;
+  struct interface *interface;
+  address_t peer;
+  int slot;
+  char inbuf[4096];
+  int inbuflen;
+  int awaiting;
+} tdns_t;
+
 typedef struct interface {
   struct interface *next;
 
@@ -58,11 +68,13 @@ typedef struct interface {
   address_t **addresses;
 
   // If nonzero, interface is activated for mDNS relay
-  int mdns_listen;
+  int mdns_slot;
 
   // Port to which to send DNS-over-TCP messages requesting mDNS queries
   // on this interface; value is zero if mdns isn't enabled on this interface.
+  int dns_slot;
   int dns_port;
+  tdns_t *dns_connections;
 } interface_t;
 
 // // Structures required for pcmd.c, line-oriented command protocol parser

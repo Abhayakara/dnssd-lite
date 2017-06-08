@@ -85,15 +85,18 @@ unixconn_write(unixconn_t *uct, const char *str)
   return NULL;
 }
 
-// Free function for the unixconn_t that we pass to the async i/o package
+// Finalize function for a unixconn_t socket, called when asio
+// refcount drops to zero.  Also called by listen socket finalizer to
+// do common work.
 void
-unixconn_free_uct(unixconn_t *uct)
+unixconn_finalize(unixconn_t *uct)
 {
   if (!uct)
     return;
 
   if (uct->path)
     {
+      unlink(uct->path);
       free(uct->path);
       uct->path = 0;
     }
@@ -106,12 +109,23 @@ unixconn_free_uct(unixconn_t *uct)
   free(uct);
 }
       
+// Finalize function for a unixconn_t listener, called when asio
+// refcount drops to zero.
+void
+unixconn_finalize_listener(unixconn_t *uct)
+{
+  if (uct && uct->path)
+    unlink(uct->path);
+  
+  unixconn_finalize(uct);
+}
+
 // Helper function to finish setting up the unixconn_t and register the
 // async I/O handler.
 
 const char *
 unixconn_make(unixconn_t **rv, int slot, const char *path, const char *remote, 
-	      asio_event_handler_t handler)
+	      asio_event_handler_t handler, void (*finalize)(void *thunk))
 {
   const char *errstr;
   int len = strlen(path);
@@ -125,31 +139,32 @@ unixconn_make(unixconn_t **rv, int slot, const char *path, const char *remote,
   if (uct->path == NULL)
     {
       errstr = "Insufficient memory for name in unixconn_t";
-      free(uct);
+      finalize(uct);
+      return errstr;
     }
   strcpy(uct->path, path);
 
   uct->remote = malloc(strlen(remote) + 1);
   if (uct->remote == NULL)
     {
-      unixconn_free_uct(uct);
+      finalize(uct);
       return "Insufficient memory for remote name in unixconn_t";
     }
   strcpy(uct->remote, remote);
 
   uct->slot = slot;
 
-  errstr = asio_set_thunk(slot, uct, (void (*)(void *))unixconn_free_uct);
+  errstr = asio_set_thunk(slot, uct, finalize);
   if (errstr != NULL)
     {
-      unixconn_free_uct(uct);
+      finalize(uct);
       return errstr;
     }
 
   errstr = asio_set_handler(slot, POLLIN, handler);
   if (errstr != NULL)
     {
-      unixconn_free_uct(uct);
+      finalize(uct);
       return errstr;
     }
       
@@ -200,7 +215,7 @@ unixconn_read_handler(int slot, int events, void *thunk)
 	if (eol == NULL)
 	  {
 	    if (status + uct->inbuflen > sizeof uct->inbuf)
-	      goto buffer_overflow;
+	      goto buffer_full;
 	    memcpy(uct->inbuf + uct->inbuflen, resid, status);
 	    uct->inbuflen += status;
 	    return;
@@ -220,8 +235,8 @@ unixconn_read_handler(int slot, int events, void *thunk)
 	    // The line could still be too long.
 	    if (len + uct->inbuflen + 1 > sizeof uct->inbuf)
 	      {
-	      buffer_overflow:
-		syslog(LOG_ERR, "unixconn_read_handler: buffer overflow from %s:%s",
+	      buffer_full:
+		syslog(LOG_ERR, "unixconn_read_handler: buffer full from %s:%s",
 		       uct->path, uct->remote);
 		asio_disable(slot);
 		asio_deref(slot);
@@ -265,20 +280,16 @@ unixconn_listen_handler(int slot, int events, void *thunk)
       return;
     }
 
-  errstr = unixconn_make(&rv, aslot, uct->path, "connected", unixconn_read_handler);
+  errstr = unixconn_make(&rv, aslot, uct->path, "connected",
+			 unixconn_read_handler,
+			 (void (*)(void * thunk))unixconn_finalize);
   if (errstr != NULL)
     {
       syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
+      asio_deref(slot);
       return;
     }
   uct->listen_handler(rv);
-
-  errstr = asio_set_thunk(slot, rv, (void (*)(void *))unixconn_free_uct);
-  if (errstr != NULL)
-    {
-      unixconn_free_uct(uct);
-      syslog(LOG_CRIT, "unixconn_listen_handler: %s", errstr);
-    }
 }
   
 // Create a unix-domain stream socket, bind it to the specified path,
@@ -335,10 +346,12 @@ unixconn_socket_create(unixconn_t **rv, const char *path)
       return errstr;
     }
 
-  errstr = unixconn_make(rv, slot, path, "listener", unixconn_listen_handler);
+  errstr = unixconn_make(rv, slot, path, "listener", 
+			 unixconn_listen_handler,
+			 (void (*)(void * thunk))unixconn_finalize_listener);
   if (errstr != NULL)
     {
-      close(sock);
+      asio_deref(slot);
       return errstr;
     }
   return NULL;

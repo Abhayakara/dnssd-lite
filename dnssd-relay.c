@@ -54,7 +54,7 @@
 //  * Accept updates on that socket as to which interfaces to listen
 //    on for TCP connections from Query proxies
 //      * primitive: add-dns <interface>
-//          * starts up a DNS listener on <interface>
+//          * starts up a DNS listener for <interface>
 //        -> port
 //      * primitive: drop-dns <interface>
 //  * Accept updates on that socket as to which interfaces to listen
@@ -161,6 +161,8 @@ main(int argc, char **argv)
 	      syslog(LOG_CRIT, "Interface name too long: %s", ip->name);
 	      exit(0);
 	    }
+	  ip->dns_slot = -1;
+	  ip->mdns_slot = -1;
 	  ip->index = -1;
 	  ip->next = interfaces;
 	  interfaces = ip;

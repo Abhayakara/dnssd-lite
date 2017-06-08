@@ -124,8 +124,14 @@ void
 control_add_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
   const char *errstr = tdns_listener_add(args[0].interface);
+  char portbuf[64];
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
+  else
+    {
+      snprintf(portbuf, sizeof portbuf, "%d", args[0].interface->dns_port);
+      control_write_status(uct, 250, portbuf, "");
+    }
 }
 
 // drop-dns <interface>
@@ -256,7 +262,7 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
     {
       unixconn_write(uct, "200-");
       unixconn_write(uct, ip->name);
-      if (ip->mdns_listen)
+      if (ip->mdns_slot)
 	unixconn_write(uct, " +mdns");
       unixconn_write(uct, "\n");
     }

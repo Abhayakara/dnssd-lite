@@ -187,6 +187,7 @@ asio_deref(int slot)
     {
       if (pollers[slot].thunk != NULL && pollers[slot].thunk_free != NULL)
 	pollers[slot].thunk_free(pollers[slot].thunk);
+      close(pollers[slot].fd);
       memset(&pollers[slot], 0, sizeof pollers[slot]);
       pollers[slot].fd = -1;
     }
@@ -285,16 +286,21 @@ asio_poll_once(int timeout)
 	{
 	  if ((revents & POLLERR) && pollers[slot].pollerr != NULL)
 	    pollers[slot].pollerr(slot, revents & POLLERR, pollers[slot].thunk);
-	  if ((revents & POLLHUP) && pollers[slot].pollhup != NULL)
+	  if (pollers[slot].fd != -1 &&
+	      (revents & POLLHUP) && pollers[slot].pollhup != NULL)
 	    pollers[slot].pollhup(slot, revents & POLLHUP, pollers[slot].thunk);
-	  if ((revents & POLLIN) && pollers[slot].pollin != NULL)
+	  if (pollers[slot].fd != -1 &&
+	      (revents & POLLIN) && pollers[slot].pollin != NULL)
 	    pollers[slot].pollin(slot, revents & POLLIN, pollers[slot].thunk);
-	  if ((revents & POLLNVAL) && pollers[slot].pollnval != NULL)
+	  if (pollers[slot].fd != -1 &&
+	      (revents & POLLNVAL) && pollers[slot].pollnval != NULL)
 	    pollers[slot].pollnval(slot, revents & POLLNVAL,
 				    pollers[slot].thunk);
-	  if ((revents & POLLOUT) && pollers[slot].pollout != NULL)
+	  if (pollers[slot].fd != -1 &&
+	      (revents & POLLOUT) && pollers[slot].pollout != NULL)
 	    pollers[slot].pollout(slot, revents & POLLOUT, pollers[slot].thunk);
-	  if ((revents & POLLPRI) && pollers[slot].pollpri != NULL)
+	  if (pollers[slot].fd != -1 &&
+	      (revents & POLLPRI) && pollers[slot].pollpri != NULL)
 	    pollers[slot].pollpri(slot, revents & POLLPRI, pollers[slot].thunk);
 	  --count;
 	}

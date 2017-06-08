@@ -45,88 +45,221 @@
 
 #include "dnssd-relay.h"
 	     
-const char *
-tdns_listener_add(interface_t *ip)
+// deref
+// write
+// free_tlt
+// make
+// read_handler
+// listen_handler
+// listener_add
+//    make a tcp46 socket
+//    listen on it
+//    get the port number
+//    stash it on the interface, along with a pointer to the tcp listener
+//    set up polling for the listen socket
+
+// Read available data from the socket.   Data is two bytes of length,
+// followed by that many bytes of data.   We buffer in case of need.
+
+void
+tdns_read_handler(int slot, int events, void *thunk)
 {
+  tdns_t *tdp = thunk;
+  int status, len;
+  const char *errstr;
+
+  // read data from the socket.
+  errstr = asio_read(&status, slot, &tdp->inbuf[tdp->inbuflen], tdp->awaiting);
+  if (errstr != NULL)
+    {
+      syslog(LOG_ERR, "tdns_read_handler: %s", errstr);
+      return;
+    }
+  tdp->inbuflen = tdp->inbuflen + status;
+
+  // Remote connection close?
+  if (status == 0)
+    {
+      char obuf[256];
+      ntop(obuf, sizeof obuf, &tdp->peer);
+      syslog(LOG_INFO, "dns disconnect on %s from %s#%d\n", 
+	     tdp->interface->name, obuf, ntohs(tdp->peer.in6.sin6_port));
+      asio_deref(slot);
+      return;
+    }
+
+  // Do we have a length?
+  if (tdp->inbuflen < 2)
+    {
+      tdp->awaiting = 2 - tdp->inbuflen;
+      return;
+    }
+  
+  len = (int)(tdp->inbuf[0]) * 256 + (int)(tdp->inbuf[1]);
+  if (tdp->inbuflen < len + 2)
+    {
+      // If the data won't fit in the buffer, we're hosed, drop the
+      // connection.
+      if (len + 2 > sizeof tdp->inbuf)
+	{
+	  syslog(LOG_ERR, "tdns_read_handler: oversize request (%d)", len);
+	  asio_deref(slot);
+	  return;
+	}
+      tdp->awaiting = (len + 2) - tdp->inbuflen;
+      return;
+    }
+
+  query_dump((unsigned char *)&tdp->inbuf[2], len);
+
+  // Process the frame.
+  // tdns_frame(tdp);
+
+  // Now we are waiting for the next frame.
+  tdp->awaiting = 2;
+  tdp->inbuflen = 0;
+}
+
+// Finalize a DNS TCP connection
+void
+tdns_connection_finalize(void *thunk)
+{
+  tdns_t *tdp = thunk;
+  tdns_t **tp;
+
+  for (tp = &tdp->interface->dns_connections; *tp; tp = &(*tp)->next)
+    {
+      if (*tp == tdp)
+	{
+	  *tp = tdp->next;
+	  break;
+	}
+    }
+  free(tdp);
+}
+
+// Called when the listen socket is readable.
+void
+tdns_listen_handler(int slot, int events, void *thunk)
+{
+  int rslot;
+  interface_t *ip = thunk;
+  address_t addr;
+  socklen_t slen;
+  const char *errstr;
+  char obuf[256];
+  tdns_t *tdp;
+
+  slen = sizeof addr;
+  errstr = asio_accept(&rslot, slot, (struct sockaddr *)&addr, &slen);
+  if (errstr != NULL)
+    {
+      syslog(LOG_ERR, "tdns_listen_handler: asio_accept: %s", errstr);
+      return;
+    }
+
+  tdp = malloc(sizeof *tdp);
+  if (tdp == NULL)
+    {
+      syslog(LOG_ERR, "tdns_listen_handler: out of memory");
+      asio_deref(rslot);
+      return;
+    }
+  memset(tdp, 0, sizeof *tdp);
+  tdp->peer = addr;
+  tdp->awaiting = 2; // Length of first frame.
+  tdp->interface = ip;
+  tdp->next = ip->dns_connections;
+  ip->dns_connections = tdp;
+  tdp->slot = rslot;
+
+  errstr = asio_set_thunk(rslot, tdp, tdns_connection_finalize);
+  if (errstr != NULL)
+    {
+      syslog(LOG_ERR, "tdns_listen_handler: asio_set_thunk: %s", errstr);
+      return;
+    }
+
+  errstr = asio_set_handler(rslot, POLLIN, tdns_read_handler);
+  if (errstr != NULL)
+    {
+      syslog(LOG_ERR, "tdns_listen_handler: asio_set_handler: %s", errstr);
+      return;
+    }
+
+  ntop(obuf, sizeof obuf, &addr);
+  syslog(LOG_INFO, "dns connection on %s from %s#%d\n", ip->name, obuf,
+	 ntohs(addr.in6.sin6_port));
+}
+
+// Finalize a tcp listener
+void
+tdns_finalize_listener(void *thunk)
+{
+  interface_t *ip = thunk;
+
+  ip->dns_slot = -1;
+  ip->dns_port = 0;
+}
+
 // Add a DNS listener for the specified interface.   Note that this is the
 // port number for that interface, not a listener that only accepts packets
 // on that interface.   DNS packets are accepted on all interfaces.
 
-#if 0
-  // open ipv6 socket, listen on IN6ADDR_ANY
-  // This lets us bind to the same port on two sockets.
-  flag = 1;
-  if (setsockopt(sock6, SOL_IPV6, IPV6_V6ONLY, &flag, sizeof flag) < 0)
-    {
-      syslog(LOG_CRIT, "IPV6_V6ONLY");
-      exit(1);
-    }
+const char *
+tdns_listener_add(interface_t *ip)
+{
+  int sock, status;
+  struct sockaddr_in6 sin6;
+  socklen_t slen;
+  const char *errstr;
 
-  /* Request the ip_recvif socket data. */
-  flag = 1;
-  if (setsockopt(sock6, IPPROTO_IPV6,
-		 IPV6_RECVPKTINFO, &flag, sizeof flag) < 0)
+  // If asked to set up a listener and there already is one, do nothing.
+  if (ip->dns_slot == -1)
     {
-      syslog(LOG_CRIT, "Unable to set IP_RECVIF sockopt: %m");
-      exit(1);
-    }
-
-  memset(&s6, 0, sizeof s6);
-  s6.sin6_family = AF_INET6;
-  s6.sin6_port = htons(ip->port); // domain
-  if (bind(sock6, (struct sockaddr *)&s6, sizeof s6) < 0)
-    {
-      syslog(LOG_CRIT, "bind %s (IPv6 port %d): %m", ip->name, ip->port);
-      exit(1);
-    }
-
-  // open ipv4 socket, listen on INADDR_ANY
-  sock4 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (sock4 < 0)
-    {
-      syslog(LOG_CRIT, "socket (IPv4): %m");
-      exit(1);
-    }
-
-#ifdef IP_PKTINFO
-  /* Request the ip_pktinfo socket data. */
-  flag = 1;
-  if (setsockopt(sock4, IPPROTO_IP, IP_PKTINFO, &flag, sizeof flag) < 0)
-    {
-      syslog(LOG_CRIT, "Unable to set IP_PKTINFO sockopt: %m");
-      exit(1);
-    }
-#else
-  /* Request the ip_recvif socket data. */
-  flag = 1;
-  if (setsockopt(sock4, IPPROTO_IP, IP_RECVIF, &flag, sizeof flag) < 0)
-    {
-      syslog(LOG_CRIT, "Unable to set IP_RECVIF sockopt: %m");
-      exit(1);
-    }
+      sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+      if (sock < 0)
+	return strerror(errno);
   
-  /* Request the ip_recvif socket data. */
-  flag = 1;
-  if (setsockopt(sock4, IPPROTO_IP, IP_RECVDSTADDR, &flag, sizeof flag) < 0)
-    {
-      syslog(LOG_CRIT, "Unable to set IP_RECVIF sockopt: %m");
-      exit(1);
-    }
-#endif           
+      // Bind to INADDR_ANY, unspecified port.
+      memset(&sin6, 0, sizeof sin6);
+      sin6.sin6_family = AF_INET6;
+      status = bind(sock, (struct sockaddr *)&sin6, sizeof sin6);
+      if (status < 0)
+	{
+	badsock:
+	  errstr = strerror(errno);
+	badsockerr:
+	  close(sock);
+	  return errstr;
+	}
 
-  memset(&s4, 0, sizeof s4);
-  s4.sin_family = AF_INET;
-  s4.sin_port = htons(ip->port);
-  if (bind(sock4, (struct sockaddr *)&s4, sizeof s4) < 0)
-    {
-      syslog(LOG_CRIT, "bind %s (IPv4 port %d): %m", ip->name, ip->port);
-      exit(1);
-    }
+      // Allow incoming connections.
+      status = listen(sock, 5);
+      if (status < 0)
+	goto badsock;
+  
+      // Get the port
+      slen = sizeof sin6;
+      status = getsockname(sock, (struct sockaddr *)&sin6, &slen);
+      if (status < 0)
+	goto badsock;
+      ip->dns_port = ntohs(sin6.sin6_port);
 
-  add_pollfd(sock6, POLLIN);
-  add_pollfd(sock4, POLLIN);
-#endif
-  return "not implemented.";
+      // Set up the async event handler
+      errstr = asio_add(&ip->dns_slot, sock);
+      if (errstr != NULL)
+	goto badsockerr;
+
+      errstr = asio_set_thunk(ip->dns_slot, ip, tdns_finalize_listener);
+      if (errstr != NULL)
+	goto badsockerr;
+
+      errstr = asio_set_handler(ip->dns_slot, POLLIN, tdns_listen_handler);
+      if (errstr != NULL)
+	goto badsockerr;
+    }
+  return NULL;
 }
       
 const char *
