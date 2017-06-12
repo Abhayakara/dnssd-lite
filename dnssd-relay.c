@@ -161,8 +161,17 @@ main(int argc, char **argv)
 	      syslog(LOG_CRIT, "Interface name too long: %s", ip->name);
 	      exit(0);
 	    }
-	  ip->dns_slot = -1;
-	  ip->mdns_slot = -1;
+#define CROSSLINK(i, d, m) \
+	  d.slot = -1; \
+	  d.mdns = &m; \
+	  d.interface = ip; \
+	  m.slot = -1; \
+	  m.tdns = &d; \
+	  m.interface = ip;
+	  
+	  CROSSLINK(ip, ip->dns4, ip->mdns4);
+	  CROSSLINK(ip, ip->dns6, ip->mdns6);
+
 	  ip->index = -1;
 	  ip->next = interfaces;
 	  interfaces = ip;

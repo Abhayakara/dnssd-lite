@@ -38,15 +38,40 @@ typedef struct unixconn {
   void (*read_handler)(struct unixconn *uct, char *data);
 } unixconn_t;
 
+typedef struct {
+  u_int8_t buf[4096];
+  int len;
+  int base;
+  int dropped_frames;
+} outbuf_t;
+
 typedef struct tdns {
   struct tdns *next;
-  struct interface *interface;
+  struct tdns_listener *listener;
   address_t peer;
   int slot;
-  char inbuf[4096];
+  u_int8_t inbuf[4096];
   int inbuflen;
   int awaiting;
+  outbuf_t out;
 } tdns_t;
+
+typedef struct tdns_listener {
+  struct interface *interface;
+  tdns_t *connections;
+  struct mdns *mdns;
+  int port;
+  int slot;
+} tdns_listener_t;
+
+typedef struct mdns {
+  struct interface *interface;
+  tdns_listener_t *tdns;
+  address_t to;
+  int slot;
+  outbuf_t out;
+  struct interface *interface;
+} mdns_t;
 
 typedef struct interface {
   struct interface *next;
@@ -67,14 +92,13 @@ typedef struct interface {
   int numaddrs, maxaddrs;
   address_t **addresses;
 
-  // If nonzero, interface is activated for mDNS relay
-  int mdns_slot;
+  // IPv4 and IPv6 multicast DNS sockets for this interface
+  mdns_t mdns4;
+  mdns_t mdns6;
 
-  // Port to which to send DNS-over-TCP messages requesting mDNS queries
-  // on this interface; value is zero if mdns isn't enabled on this interface.
-  int dns_slot;
-  int dns_port;
-  tdns_t *dns_connections;
+  // Dual-stack DNS TCP listeners for mdns4 and mdns6
+  tdns_listener_t *dns4;
+  tdns_listener_t *dns6;
 } interface_t;
 
 // // Structures required for pcmd.c, line-oriented command protocol parser
@@ -156,6 +180,12 @@ extern interface_t *interfaces;
 #include "pcmd-proto.h"
 #include "tdns-proto.h"
 #include "unixconn-proto.h"
+
+#define TAS(thing) &thing, sizeof thing
+
+#define MDNS_PORT 5353
+#define MDNS_MCAST6 "FF02::FB"
+#define MDNS_MCAST4 "224.0.0.251"
 
 /* Local Variables:  */
 /* mode:C */

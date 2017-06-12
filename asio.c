@@ -338,6 +338,38 @@ asio_write(int *len, int slot, char *buf, int max)
   return NULL;
 }
 
+// Read from a slot
+const char *
+asio_recvfrom(int *len, int slot, char *buf, int max, 
+	      struct sockaddr *sa, socklen_t *len)
+{
+  int status;
+  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
+    return "asio_read: invalid slot";
+
+  status = recvfrom(pollers[slot].fd, buf, max, sa, len);
+  if (status < 0)
+    return strerror(errno);
+  *len = status;
+  return NULL;
+}
+
+// Write to a slot
+const char *
+asio_sendto(int *len, int slot, char *buf, int max, 
+	    struct sockaddr *sa, socklen_t len)
+{
+  int status;
+  if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
+    return "asio_write: invalid slot";
+
+  status = write(pollers[slot].fd, buf, max, sa, len);
+  if (status < 0)
+    return strerror(errno);
+  *len = status;
+  return NULL;
+}
+
 // Accept a connection, make a slot for it
 const char *
 asio_accept(int *rv, int slot, struct sockaddr *remote, socklen_t *remote_len)
@@ -357,6 +389,39 @@ asio_accept(int *rv, int slot, struct sockaddr *remote, socklen_t *remote_len)
     return errstr;
   *rv = new_slot;
   return NULL;
+}
+
+// Lossy output buffer.   If there's room, put the data there, preceded by
+// a two-byte length.   If there's not room, increment the dropped frame
+// count and silently discard the data.    If we really cared we could buffer
+// the data, but if we are getting behind, buffering is likely to make
+// things worse: the assumption is that the protocol is tolerant of
+// datagram drops.
+asio_queue_out(outbuf_t *out, u_int8_t *buf, int buflen)
+{
+  int need = buflen + 2; // datagram plus length
+
+  // No space in buffer...
+  if (out->outlen + need >= sizeof out->outbuf)
+    {
+      if (out->outlen + need - out->outbase < sizeof out->outbuf)
+	{
+	  out->outlen -= out->outbase;
+	  memmove(&out->outbuf[0], &out->outbuf[out->outbase], out->outlen);
+	  out->outbase = 0;
+	}
+      else
+	{
+	  out->dropped_frames++;
+	  return;
+	}
+    }
+
+  // Copy the datagram length and the data into the buffer and enable writing
+  out->outbuf[out->outlen] = buflen >> 8;
+  out->outbuf[out->outlen + 1] = buflen & 255;
+  memcpy(&out->outbuf[out->outlen + 2], inbuf, buflen);
+  out->outlen += need;
 }
 
 /* Local Variables:  */
