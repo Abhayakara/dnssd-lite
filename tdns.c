@@ -52,13 +52,13 @@ tdns_frame_to_mdns(tdns_t *tdp)
   tdns_listener_t *tlp = tdp->listener;
 
   // Should never happen.
-  if (tdp->mdns == NULL)
+  if (tlp == NULL || tlp->mdns == NULL)
     {
       syslog(LOG_CRIT, "tdp->mdns == NULL!");
       exit(1);
     }
   
-  mdns_write(tdns->mdns, tdp->inbuf, tdp->inbuflen);
+  mdns_write(tlp->mdns, tdp->inbuf, tdp->inbuflen);
   tdp->inbuflen = 0;
 }
 
@@ -72,6 +72,13 @@ tdns_read_handler(int slot, int events, void *thunk)
   tdns_t *tdp = thunk;
   int status, len;
   const char *errstr;
+
+  // Programming error.
+  if (tdp->listener == NULL)
+    {
+      syslog(LOG_CRIT, "tdns_read_handler: NULL listener");
+      exit(1);
+    }
 
   // read data from the socket.
   errstr = asio_read(&status, slot, &tdp->inbuf[tdp->inbuflen], tdp->awaiting);
@@ -132,7 +139,7 @@ tdns_connection_finalize(void *thunk)
   tdns_t *tdp = thunk;
   tdns_t **tp;
 
-  for (tp = &tdp->listener->dns_connections; *tp; tp = &(*tp)->next)
+  for (tp = &tdp->listener->connections; *tp; tp = &(*tp)->next)
     {
       if (*tp == tdp)
 	{
@@ -174,8 +181,8 @@ tdns_listen_handler(int slot, int events, void *thunk)
   tdp->peer = addr;
   tdp->awaiting = 2; // Length of first frame.
   tdp->listener = tlp;
-  tdp->next = tlp->dns_connections;
-  tlp->dns_connections = tdp;
+  tdp->next = tlp->connections;
+  tlp->connections = tdp;
   tdp->slot = rslot;
 
   errstr = asio_set_thunk(rslot, tdp, tdns_connection_finalize);
@@ -194,7 +201,7 @@ tdns_listen_handler(int slot, int events, void *thunk)
 
   ntop(obuf, sizeof obuf, &addr);
   syslog(LOG_INFO, "dns connection on %s:%s from %s#%d\n", 
-	 tlp->interface->name, tlp == &tlp->interface.dns4 ? "ipv4" : "ipv6",
+	 tlp->interface->name, tlp == &tlp->interface->dns4 ? "ipv4" : "ipv6",
 	 obuf, ntohs(addr.in6.sin6_port));
 }
 
@@ -204,8 +211,8 @@ tdns_finalize_listener(void *thunk)
 {
   tdns_listener_t *tlp = thunk;
 
-  tlp->dns_slot = -1;
-  tlp->dns_port = 0;
+  tlp->slot = -1;
+  tlp->port = 0;
 }
 
 // Add a DNS listener for the specified interface.   Note that this is the
@@ -250,7 +257,7 @@ tdns_listener_add(tdns_listener_t *tlp)
       status = getsockname(sock, (struct sockaddr *)&sin6, &slen);
       if (status < 0)
 	goto badsock;
-      ip->dns_port = ntohs(sin6.sin6_port);
+      tlp->port = ntohs(sin6.sin6_port);
 
       // Set up the async event handler
       errstr = asio_add(&tlp->slot, sock);
@@ -312,7 +319,7 @@ tdns_write(tdns_listener_t *tlp, u_int8_t *buf, int length)
 {
   tdns_t *tdp;
 
-  for (tdp = tlp; tdp; tdp = tdp -> next)
+  for (tdp = tlp->connections; tdp; tdp = tdp -> next)
     {
       asio_queue_out(&tdp->out, buf, length);
       asio_set_handler(tdp->slot, POLLOUT, tdns_write_handler);

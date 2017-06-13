@@ -123,15 +123,26 @@ control_start(const char *path)
 void
 control_add_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
 {
-  const char *errstr = tdns_listener_add(args[0].interface);
+  const char *errstr;
   char portbuf[64];
+  errstr = tdns_listener_add(&args[0].interface->dns4);
   if (errstr != NULL)
-    control_write_status(uct, 512, errstr, "");
-  else
     {
-      snprintf(portbuf, sizeof portbuf, "%d", args[0].interface->dns_port);
-      control_write_status(uct, 250, portbuf, "");
+      control_write_status(uct, 512, errstr, "");
+      return;
     }
+  errstr = tdns_listener_add(&args[0].interface->dns6);
+  if (errstr != NULL)
+    {
+      control_write_status(uct, 512, errstr, "");
+      return;
+    }
+  if (args[0].interface->dns4.port == -1)
+    snprintf(portbuf, sizeof portbuf, "%d", args[0].interface->dns6.port);
+  else
+    snprintf(portbuf, sizeof portbuf, "%d %d",
+	     args[0].interface->dns6.port, args[0].interface->dns4.port);
+  control_write_status(uct, 250, portbuf, "");
 }
 
 // drop-dns <interface>
@@ -262,15 +273,20 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
     {
       unixconn_write(uct, "200-");
       unixconn_write(uct, ip->name);
-      if (ip->mdns_slot)
-	unixconn_write(uct, " +mdns");
+      if (ip->mdns4.slot)
+	unixconn_write(uct, " +mdns4");
+      if (ip->mdns6.slot)
+	unixconn_write(uct, " +mdns6");
+      if (ip->dns4.slot)
+	unixconn_write(uct, " +dns4");
+      if (ip->dns6.slot)
+	unixconn_write(uct, " +dns6");
       unixconn_write(uct, "\n");
     }
   for (ix = 0; ix < whitelist_len; ix++)
     {
       char nbuf[64];
-      int len;
-      len = ntop(nbuf, sizeof nbuf, &whitelist[ix]);
+      int len = ntop(nbuf, sizeof nbuf, &whitelist[ix]);
       if (ix + 1 == whitelist_len)
 	unixconn_write(uct, "200 ");
       else

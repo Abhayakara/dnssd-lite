@@ -45,6 +45,32 @@
 
 #include "dnssd-relay.h"
 
+const char *
+mdns_addr_to_buf(int *addrlen, u_int8_t *buffer, int length, int max, address_t *from)
+{
+  int len;
+
+  if (from->sa.sa_family == AF_INET)
+    len = sizeof from->in.sin_addr;
+  else
+    len = sizeof from->in6.sin6_addr;
+  len++;
+
+  if (length + len + 2 > max)
+    return "no space for address";
+  
+  buffer[length] = len >> 8;
+  buffer[length + 1] = len & 255;
+  buffer[length + 2] = from->sa.sa_family == AF_INET6;
+  if (buffer[length + 2] == 0)
+    memcpy(&buffer[length], &from->in6.sin6_addr, 16);
+  else
+    memcpy(&buffer[length], &from->in.sin_addr, 4);
+
+  *addrlen = len + 2;
+  return NULL;
+}
+
 // Handle incoming datagrams...
 void
 mdns_read_handler(int slot, int events, void *thunk)
@@ -53,10 +79,10 @@ mdns_read_handler(int slot, int events, void *thunk)
   u_int8_t datagram[4096];
   int length, addrlen;
   const char *errstr;
-  addr_t from;
+  address_t from;
   
-  errstr = asio_recvfrom(&length, slot, 
-			 datagram, sizeof datagram, &from, sizeof from);
+  errstr = asio_recvfrom(&length, slot,  datagram, sizeof datagram, 0, 
+			 (struct sockaddr *)&from, sizeof from);
   if (errstr != NULL)
     {
     bad:
@@ -65,7 +91,7 @@ mdns_read_handler(int slot, int events, void *thunk)
     }
   
   // Copy out the source address at the end of the datagram buffer
-  errstr = mdns_addr_to_buf(datagram, length, sizeof datagram);
+  errstr = mdns_addr_to_buf(&addrlen, datagram, length, sizeof datagram, &from);
   if (errstr != NULL)
     goto bad;
 
@@ -73,6 +99,14 @@ mdns_read_handler(int slot, int events, void *thunk)
   errstr = tdns_write(mdp->tdns, datagram, length + addrlen + 2);
   if (errstr != NULL)
     goto bad;
+}
+
+void
+mdns_finalize(void *thunk)
+{
+  mdns_t *mdp = thunk;
+  mdp->slot = -1;
+  memset(&mdp->out, 0, sizeof mdp->out);
 }
 
 // Multicast sockets don't seem to work as IPv4/IPv6 sockets, so in principle
@@ -89,12 +123,14 @@ mdns_read_handler(int slot, int events, void *thunk)
 const char *
 mdns_listener_add(interface_t *ip)
 {
-  int sock, result;
+  int sock, status;
   address_t addr;
   socklen_t slen;
   int one = 1;
   int zero = 0;
   struct ipv6_mreq mr6;
+  struct ip_mreq mr4;
+  const char *errstr;
 
   if (ip->mdns6.slot == -1)
     {
@@ -102,7 +138,7 @@ mdns_listener_add(interface_t *ip)
       if (sock < 0)
 	return strerror(errno);
 
-      result = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, TAS(one));
+      status = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, TAS(one));
       if (status < 0)
 	{
 	badsock:
@@ -112,11 +148,11 @@ mdns_listener_add(interface_t *ip)
 	  return errstr;
 	}
 
-      result = setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, TAS(one));
+      status = setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, TAS(one));
       if (status < 0)
 	goto badsock;
 
-      inet_pton(AF_INET6, MDNS_MCAST6, TAS(ip->mdns6.to));
+      inet_pton(AF_INET6, MDNS_MCAST6, &ip->mdns6.to);
       ip->mdns6.to.in6.sin6_family = AF_INET6;
       ip->mdns6.to.in6.sin6_port = htons(MDNS_PORT);
       
@@ -125,22 +161,22 @@ mdns_listener_add(interface_t *ip)
 	goto badsock;
 
       // Join the MDNS multicast group on this interface
-      inet_pton(AF_INET6, MDNS_MCAST6, TAS(mr6.ipv6mr_multiaddr.s_addr));
+      inet_pton(AF_INET6, MDNS_MCAST6, &mr6.ipv6mr_multiaddr);
       mr6.ipv6mr_interface = ip->index;
-      result = setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, TAS(mr6));
-      if (result < 0)
+      status = setsockopt(sock, IPPROTO_IPV6, IP_ADD_MEMBERSHIP, TAS(mr6));
+      if (status < 0)
 	goto badsock;
 
       // Send packets on this socket out of this interface.
-      result = setsockopt(sock, IPv6_MULTICAST_IF, TAS(ip->index));
-      if (result < 0)
+      status = setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_IF, TAS(ip->index));
+      if (status < 0)
 	goto badsock;
 
       // Disable looping back of packets (right?)
       // This will prevent services the local host is advertising from
       // being discovered, so have to figure out whether that's good or bad.
-      result = setsockopt(sock, IPv6_MULTICAST_LOOP, TAS(zero));
-      if (result < 0)
+      status = setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, TAS(zero));
+      if (status < 0)
 	goto badsock;
       
       errstr = asio_add(&ip->mdns6.slot, sock);
@@ -148,7 +184,7 @@ mdns_listener_add(interface_t *ip)
 	goto badsockerr;
 
       ip->mdns6.interface = ip;
-      errstr = asio_set_thunk(ip->mdns6.slot, &ip->mdns6, mdns6_finalize);
+      errstr = asio_set_thunk(ip->mdns6.slot, &ip->mdns6, mdns_finalize);
       if (errstr != NULL)
 	{
 	badslot:
@@ -163,9 +199,11 @@ mdns_listener_add(interface_t *ip)
 
   if (ip->mdns4.slot == -1)
     {
+      int i;
+      
       for (i = 0; i < ip->numaddrs; i++)
 	{
-	  if (ip->addresses[i].sa.sa_family == AF_INET4)
+	  if (ip->addresses[i]->sa.sa_family == AF_INET)
 	    break;
 	}
       if (i != ip->numaddrs)
@@ -174,16 +212,16 @@ mdns_listener_add(interface_t *ip)
 	  if (sock < 0)
 	    return strerror(errno);
 	  
-	  result = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, TAS(one));
+	  status = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, TAS(one));
 	  if (status < 0)
 	    goto badsock;
 	  
-	  result = setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, TAS(one));
+	  status = setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, TAS(one));
 	  if (status < 0)
 	    goto badsock;
 	  
-	  inet_pton(AF_INET, MDNS_MCAST4, TAS(ip->mdns4.to));
-	  ip->mdns4.to.in.sin_family = AF_INET4;
+	  inet_pton(AF_INET, MDNS_MCAST4, &ip->mdns4.to);
+	  ip->mdns4.to.in.sin_family = AF_INET;
 	  ip->mdns4.to.in.sin_port = htons(MDNS_PORT);
 	  
 	  status = bind(sock, (struct sockaddr *)&ip->mdns4.to, sizeof ip->mdns4.to);
@@ -191,22 +229,22 @@ mdns_listener_add(interface_t *ip)
 	    goto badsock;
 
 	  // Join the MDNS multicast group on this interface
-	  inet_pton(AF_INET, MDNS_MCAST4, TAS(mr4.ipmr_multiaddr.s_addr));
-	  mr4.ipmr_interface.s_addr = ip->addresses[i].in.in_addr.s_addr;
-	  result = setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, TAS(mr6));
-	  if (result < 0)
+	  inet_pton(AF_INET, MDNS_MCAST4, &mr4.imr_multiaddr);
+	  mr4.imr_interface.s_addr = ip->addresses[i]->in.sin_addr.s_addr;
+	  status = setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, TAS(mr6));
+	  if (status < 0)
 	    goto badsock;
 
 	  // Send packets on this socket out of this interface.
-	  result = setsockopt(sock, IP_MULTICAST_IF, TAS(ip->addresses[i]));
-	  if (result < 0)
+	  status = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, TAS(ip->addresses[i]));
+	  if (status < 0)
 	    goto badsock;
 
 	  // Disable looping back of packets (right?)
 	  // This will prevent services the local host is advertising from
 	  // being discovered, so have to figure out whether that's good or bad.
-	  result = setsockopt(sock, IP_MULTICAST_LOOP, TAS(zero));
-	  if (result < 0)
+	  status = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_LOOP, TAS(zero));
+	  if (status < 0)
 	    goto badsock;
       
 	  errstr = asio_add(&ip->mdns4.slot, sock);
@@ -214,7 +252,7 @@ mdns_listener_add(interface_t *ip)
 	    goto badsockerr;
 	  
 	  ip->mdns4.interface = ip;
-	  errstr = asio_set_thunk(ip->mdns4.slot, &ip->mdns4, mdns4_finalize);
+	  errstr = asio_set_thunk(ip->mdns4.slot, &ip->mdns4, mdns_finalize);
 	  if (errstr != NULL)
 	    {
 	    badslot4:
@@ -235,9 +273,10 @@ mdns_write_handler(int slot, int events, void *thunk)
 {
   mdns_t *mdp = thunk;
   int len;
-  int buflen = mdp->outlen - mdp->outbase;
-  int status;
-  u_int8_t *outbuf = &mdp->outbuf[mdp->outbase];
+  int buflen = mdp->out.len - mdp->out.base;
+  int count;
+  u_int8_t *outbuf = &mdp->out.buf[mdp->out.base];
+  const char *errstr;
   
   // Programming error
   if (buflen < 2)
@@ -256,18 +295,19 @@ mdns_write_handler(int slot, int events, void *thunk)
       exit(1);
     }
   
-  errstr = asio_sendto(mdp->slot, outbuf + 2, len, 0, &mdp->to, sizeof mdp->to);
+  errstr = asio_sendto(&count, mdp->slot, outbuf + 2, len, 0,
+		       (struct sockaddr *)&mdp->to, sizeof mdp->to);
   if (errstr != NULL)
     {
       syslog(LOG_ERR, "mdns_write_handler: %s", errstr);
       return;
     }
-  mdp->outbase += len + 2;
+  mdp->out.base += len + 2;
 
   // When the buffer is empty, get rid of the gap.
-  if (mdp->outbase == mdp->outlen)
+  if (mdp->out.base == mdp->out.len)
     {
-      mdp->outbase = mdp->outlen = 0;
+      mdp->out.base = mdp->out.len = 0;
       // nothing left to write.
       asio_clear_handler(mdp->slot, POLLOUT);
     }
@@ -287,7 +327,7 @@ mdns_write(mdns_t *mdp, u_int8_t *buf, int buflen)
   // Haven't set up an mdns socket?
   if (mdp->slot == -1)
     {
-      mdp->dropped_frames++;
+      mdp->out.dropped_frames++;
       return;
     }
 

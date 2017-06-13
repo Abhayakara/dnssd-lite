@@ -70,7 +70,6 @@ typedef struct mdns {
   address_t to;
   int slot;
   outbuf_t out;
-  struct interface *interface;
 } mdns_t;
 
 typedef struct interface {
@@ -97,8 +96,8 @@ typedef struct interface {
   mdns_t mdns6;
 
   // Dual-stack DNS TCP listeners for mdns4 and mdns6
-  tdns_listener_t *dns4;
-  tdns_listener_t *dns6;
+  tdns_listener_t dns4;
+  tdns_listener_t dns6;
 } interface_t;
 
 // // Structures required for pcmd.c, line-oriented command protocol parser

@@ -112,11 +112,11 @@ asio_add(int *rv, int sock)
 	      memcpy(new_pollers, pollers, max_pollers * sizeof *new_pollers);
 	      free(pollers);
 	      memset(new_pollers + max_pollers * sizeof *pollers,
-		     POLLFD_INC * sizeof *new_pollers, 0);
+		     0, POLLFD_INC * sizeof *new_pollers);
 	    }
 	  else
 	    {
-	      memset(new_pollers, new_max_pollers * sizeof *new_pollers, 0);
+	      memset(new_pollers, 0, new_max_pollers * sizeof *new_pollers);
 	    }
 
 	  max_pollers = new_max_pollers;
@@ -340,33 +340,33 @@ asio_write(int *len, int slot, char *buf, int max)
 
 // Read from a slot
 const char *
-asio_recvfrom(int *len, int slot, char *buf, int max, 
+asio_recvfrom(int *count, int slot, char *buf, int max, int flags,
 	      struct sockaddr *sa, socklen_t *len)
 {
   int status;
   if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
     return "asio_read: invalid slot";
 
-  status = recvfrom(pollers[slot].fd, buf, max, sa, len);
+  status = recvfrom(pollers[slot].fd, buf, max, flags, sa, len);
   if (status < 0)
     return strerror(errno);
-  *len = status;
+  *count = status;
   return NULL;
 }
 
 // Write to a slot
 const char *
-asio_sendto(int *len, int slot, char *buf, int max, 
+asio_sendto(int *count, int slot, char *buf, int max, int flags,
 	    struct sockaddr *sa, socklen_t len)
 {
   int status;
   if (slot < 0 || slot >= num_pollers || pollers[slot].fd == -1)
     return "asio_write: invalid slot";
 
-  status = write(pollers[slot].fd, buf, max, sa, len);
+  status = sendto(pollers[slot].fd, buf, max, flags, sa, len);
   if (status < 0)
     return strerror(errno);
-  *len = status;
+  *count = status;
   return NULL;
 }
 
@@ -397,18 +397,19 @@ asio_accept(int *rv, int slot, struct sockaddr *remote, socklen_t *remote_len)
 // the data, but if we are getting behind, buffering is likely to make
 // things worse: the assumption is that the protocol is tolerant of
 // datagram drops.
+void
 asio_queue_out(outbuf_t *out, u_int8_t *buf, int buflen)
 {
   int need = buflen + 2; // datagram plus length
 
   // No space in buffer...
-  if (out->outlen + need >= sizeof out->outbuf)
+  if (out->len + need >= sizeof out->buf)
     {
-      if (out->outlen + need - out->outbase < sizeof out->outbuf)
+      if (out->len + need - out->base < sizeof out->buf)
 	{
-	  out->outlen -= out->outbase;
-	  memmove(&out->outbuf[0], &out->outbuf[out->outbase], out->outlen);
-	  out->outbase = 0;
+	  out->len -= out->base;
+	  memmove(&out->buf[0], &out->buf[out->base], out->len);
+	  out->base = 0;
 	}
       else
 	{
@@ -418,10 +419,10 @@ asio_queue_out(outbuf_t *out, u_int8_t *buf, int buflen)
     }
 
   // Copy the datagram length and the data into the buffer and enable writing
-  out->outbuf[out->outlen] = buflen >> 8;
-  out->outbuf[out->outlen + 1] = buflen & 255;
-  memcpy(&out->outbuf[out->outlen + 2], inbuf, buflen);
-  out->outlen += need;
+  out->buf[out->len] = buflen >> 8;
+  out->buf[out->len + 1] = buflen & 255;
+  memcpy(&out->buf[out->len + 2], buf, buflen);
+  out->len += need;
 }
 
 /* Local Variables:  */
