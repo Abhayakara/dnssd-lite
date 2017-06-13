@@ -80,9 +80,10 @@ mdns_read_handler(int slot, int events, void *thunk)
   int length, addrlen;
   const char *errstr;
   address_t from;
+  socklen_t fromlen = sizeof from;
   
-  errstr = asio_recvfrom(&length, slot,  datagram, sizeof datagram, 0, 
-			 (struct sockaddr *)&from, sizeof from);
+  errstr = asio_recvfrom(&length, slot,  (char *)datagram, sizeof datagram, 0, 
+			 (struct sockaddr *)&from, &fromlen);
   if (errstr != NULL)
     {
     bad:
@@ -124,8 +125,6 @@ const char *
 mdns_listener_add(interface_t *ip)
 {
   int sock, status;
-  address_t addr;
-  socklen_t slen;
   int one = 1;
   int zero = 0;
   struct ipv6_mreq mr6;
@@ -295,7 +294,7 @@ mdns_write_handler(int slot, int events, void *thunk)
       exit(1);
     }
   
-  errstr = asio_sendto(&count, mdp->slot, outbuf + 2, len, 0,
+  errstr = asio_sendto(&count, mdp->slot, (char *)outbuf + 2, len, 0,
 		       (struct sockaddr *)&mdp->to, sizeof mdp->to);
   if (errstr != NULL)
     {

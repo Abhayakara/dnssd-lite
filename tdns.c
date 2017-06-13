@@ -81,7 +81,8 @@ tdns_read_handler(int slot, int events, void *thunk)
     }
 
   // read data from the socket.
-  errstr = asio_read(&status, slot, &tdp->inbuf[tdp->inbuflen], tdp->awaiting);
+  errstr = asio_read(&status, slot,
+		     (char *)&tdp->inbuf[tdp->inbuflen], tdp->awaiting);
   if (errstr != NULL)
     {
       syslog(LOG_ERR, "tdns_read_handler: %s", errstr);
@@ -288,7 +289,7 @@ tdns_write_handler(int slot, int event, void *thunk)
   const char *errstr;
   int length;
 
-  errstr = asio_write(&length, slot, &tdp->out.buf[tdp->out.base],
+  errstr = asio_write(&length, slot, (char *)&tdp->out.buf[tdp->out.base],
 		      tdp->out.len - tdp->out.base);
   if (errstr != NULL)
     {
@@ -324,6 +325,7 @@ tdns_write(tdns_listener_t *tlp, u_int8_t *buf, int length)
       asio_queue_out(&tdp->out, buf, length);
       asio_set_handler(tdp->slot, POLLOUT, tdns_write_handler);
     }
+  return NULL;
 }
 
 /* Local Variables:  */

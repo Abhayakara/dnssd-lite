@@ -286,7 +286,7 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
   for (ix = 0; ix < whitelist_len; ix++)
     {
       char nbuf[64];
-      int len = ntop(nbuf, sizeof nbuf, &whitelist[ix]);
+      ntop(nbuf, sizeof nbuf, &whitelist[ix]);
       if (ix + 1 == whitelist_len)
 	unixconn_write(uct, "200 ");
       else
