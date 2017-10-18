@@ -154,6 +154,8 @@ control_drop_dns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
   const char *errstr = tdns_listener_drop(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
+  else
+    control_write_status(uct, 250, "Ok.", "");
 }
 
 // add-mdns <interface>
@@ -165,6 +167,8 @@ control_add_mdns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
   const char *errstr = mdns_listener_add(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
+  else
+    control_write_status(uct, 250, "Ok.", "");
 }
 
 // drop-mdns <interface>
@@ -176,6 +180,8 @@ control_drop_mdns(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args
   const char *errstr = mdns_listener_drop(args[0].interface);
   if (errstr != NULL)
     control_write_status(uct, 512, errstr, "");
+  else
+    control_write_status(uct, 250, "Ok.", "");
 }
 
 int

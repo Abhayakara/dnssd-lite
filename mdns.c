@@ -91,6 +91,8 @@ mdns_read_handler(int slot, int events, void *thunk)
       return;
     }
   
+  query_dump(datagram, length);
+
   // Copy out the source address at the end of the datagram buffer
   errstr = mdns_addr_to_buf(&addrlen, datagram, length, sizeof datagram, &from);
   if (errstr != NULL)
@@ -130,6 +132,7 @@ mdns_listener_add(interface_t *ip)
   struct ipv6_mreq mr6;
   struct ip_mreq mr4;
   const char *errstr;
+  static char errbuf[256];
 
   if (ip->mdns6.slot == -1)
     {
@@ -151,33 +154,39 @@ mdns_listener_add(interface_t *ip)
       if (status < 0)
 	goto badsock;
 
-      inet_pton(AF_INET6, MDNS_MCAST6, &ip->mdns6.to);
+      //inet_pton(AF_INET6, MDNS_MCAST6, &ip->mdns6.to);
+      memset(&ip->mdns6.to, 0, sizeof ip->mdns6.to);
       ip->mdns6.to.in6.sin6_family = AF_INET6;
       ip->mdns6.to.in6.sin6_port = htons(MDNS_PORT);
       
-      status = bind(sock, (struct sockaddr *)&ip->mdns6.to, sizeof ip->mdns6.to);
+      status = bind(sock, (struct sockaddr *)&ip->mdns6.to, sizeof ip->mdns6.to.in6);
       if (status < 0)
-	goto badsock;
+	{
+	  snprintf(errbuf, sizeof errbuf, "bind: %s", strerror(errno));
+	  errstr = errbuf;
+	  goto badsockerr;
+	}
 
       // Join the MDNS multicast group on this interface
       inet_pton(AF_INET6, MDNS_MCAST6, &mr6.ipv6mr_multiaddr);
       mr6.ipv6mr_interface = ip->index;
       status = setsockopt(sock, IPPROTO_IPV6, IP_ADD_MEMBERSHIP, TAS(mr6));
       if (status < 0)
-	goto badsock;
+	{
+	  snprintf(errbuf, sizeof errbuf, "IPV6_ADD_MEMBERSHIP: %s", strerror(errno));
+	  errstr = errbuf;
+	  goto badsockerr;
+	}
 
       // Send packets on this socket out of this interface.
       status = setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_IF, TAS(ip->index));
       if (status < 0)
-	goto badsock;
+	{
+	  snprintf(errbuf, sizeof errbuf, "IPV6_MULTICAST_IF: %s", strerror(errno));
+	  errstr = errbuf;
+	  goto badsockerr;
+	}
 
-      // Disable looping back of packets (right?)
-      // This will prevent services the local host is advertising from
-      // being discovered, so have to figure out whether that's good or bad.
-      status = setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, TAS(zero));
-      if (status < 0)
-	goto badsock;
-      
       errstr = asio_add(&ip->mdns6.slot, sock);
       if (errstr != NULL)
 	goto badsockerr;
@@ -219,33 +228,39 @@ mdns_listener_add(interface_t *ip)
 	  if (status < 0)
 	    goto badsock;
 	  
-	  inet_pton(AF_INET, MDNS_MCAST4, &ip->mdns4.to);
+	  //inet_pton(AF_INET, MDNS_MCAST4, &ip->mdns4.to);
+	  memset(&ip->mdns4.to, 0, sizeof ip->mdns4.to);
 	  ip->mdns4.to.in.sin_family = AF_INET;
 	  ip->mdns4.to.in.sin_port = htons(MDNS_PORT);
 	  
-	  status = bind(sock, (struct sockaddr *)&ip->mdns4.to, sizeof ip->mdns4.to);
+	  status = bind(sock, (struct sockaddr *)&ip->mdns4.to, sizeof ip->mdns4.to.in);
 	  if (status < 0)
-	    goto badsock;
+	    {
+	      snprintf(errbuf, sizeof errbuf, "bind4: %s", strerror(errno));
+	      errstr = errbuf;
+	      goto badsockerr;
+	    }
 
 	  // Join the MDNS multicast group on this interface
 	  inet_pton(AF_INET, MDNS_MCAST4, &mr4.imr_multiaddr);
 	  mr4.imr_interface.s_addr = ip->addresses[i]->in.sin_addr.s_addr;
-	  status = setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, TAS(mr6));
+	  status = setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, TAS(mr4));
 	  if (status < 0)
-	    goto badsock;
+	    {
+	      snprintf(errbuf, sizeof errbuf, "IP_ADD_MEMBERSHIP: %s", strerror(errno));
+	      errstr = errbuf;
+	      goto badsockerr;
+	    }
 
 	  // Send packets on this socket out of this interface.
-	  status = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, TAS(ip->addresses[i]));
+	  status = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, TAS(ip->addresses[i]->in.sin_addr));
 	  if (status < 0)
-	    goto badsock;
+	    {
+	      snprintf(errbuf, sizeof errbuf, "IP_MULTICAST_IF: %s", strerror(errno));
+	      errstr = errbuf;
+	      goto badsockerr;
+	    }
 
-	  // Disable looping back of packets (right?)
-	  // This will prevent services the local host is advertising from
-	  // being discovered, so have to figure out whether that's good or bad.
-	  status = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_LOOP, TAS(zero));
-	  if (status < 0)
-	    goto badsock;
-      
 	  errstr = asio_add(&ip->mdns4.slot, sock);
 	  if (errstr != NULL)
 	    goto badsockerr;

@@ -102,7 +102,8 @@ query_dump(unsigned char *buf, ssize_t len)
 	}
       type = (buf[offset] << 8) | buf[offset + 1];
       class = (buf[offset + 2] << 8) | buf[offset + 3];
-      printf("%s %s ", namebuf, classname(class));
+      printf("%s %s %s ", namebuf,
+	     classname(class & 0x7fff), (class & 0x8000) ? "uc" : "mc");
       result = dump_rrdata(class, type, 0, 0, 0, 0, 0);
       if (result < 0)
 	return result;
@@ -173,7 +174,8 @@ dump_rrdata(int class, int type, int ttl, int offset, ssize_t len,
 
   /* TTL has special meaning for OPT RRtype */
   if (message && type != 41)
-    printf("%s %d ", classname(class), ttl);
+    printf("%s (%s) %d ",
+	   classname(class & 0x7fff), (class * 0x8000) ? "uc" : "mc", ttl);
 
   switch(type)
     {
