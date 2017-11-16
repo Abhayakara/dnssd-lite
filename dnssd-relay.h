@@ -45,6 +45,7 @@ typedef struct {
   int dropped_frames;
 } outbuf_t;
 
+// A connection from a proxy
 typedef struct tdns {
   struct tdns *next;
   struct tdns_listener *listener;
@@ -56,25 +57,63 @@ typedef struct tdns {
   outbuf_t out;
 } tdns_t;
 
+// A listener for tdns connections (currently there's only one).
 typedef struct tdns_listener {
   struct interface *interface;
   tdns_t *connections;
-  struct mdns *mdns;
   int port;
   int slot;
 } tdns_listener_t;
 
 typedef struct mdns {
   struct interface *interface;
-  tdns_listener_t *tdns;
   address_t to;
   int slot;
   outbuf_t out;
+
+  // Discovery Proxy connections subscribed to mdns traffic on this link
+  // with this address family
+  tdns_t *proxies;
+  int num_proxies;
 } mdns_t;
 
+// State of a DNS Stateful Operation message
+typedef struct tdns_dso_state_t {
+  int have_op_tlv;
+  int op_tlv_type;
+  int op_tlv_len;
+  u_int8_t *op_tlv_data;
+  
+  int have_l2_src;
+  int l2_src_len;
+  u_int8_t *l2_src_data;
+
+  int have_ip_src;
+  int have_ip_family;
+  address_t ip_src;
+
+  int have_ip_src_port;
+  int src_port;
+
+  int have_link_id;
+  int link_id_len;
+  u_int8_t *link_id_data;
+
+  u_int8_t *invalid_link_data;
+  int invalid_link_len;
+
+  mdns_t **links;
+  int num_links;
+} tdns_dso_state_t;
+  
 typedef struct interface {
   struct interface *next;
 
+  // The id of the link this interface is physically connected to, as
+  // configured either in the configuration file, or using the control
+  // interface
+  u_int32_t link_id;
+  
   // The name by which the O.S. calls the interface; not guaranteed stable 
   // across reboots
   char *name;
@@ -94,10 +133,6 @@ typedef struct interface {
   // IPv4 and IPv6 multicast DNS sockets for this interface
   mdns_t mdns4;
   mdns_t mdns6;
-
-  // Dual-stack DNS TCP listeners for mdns4 and mdns6
-  tdns_listener_t dns4;
-  tdns_listener_t dns6;
 } interface_t;
 
 // // Structures required for pcmd.c, line-oriented command protocol parser
@@ -107,10 +142,12 @@ typedef union arg {
   interface_t *interface;
   address_t addr;
   u_int16_t port;
+  u_int32_t ifid;
 } arg_t;
   
 typedef enum {
-  ARGTYPE_NONE, ARGTYPE_INTERFACE, ARGTYPE_IPADDR, ARGTYPE_PORT
+  ARGTYPE_NONE, ARGTYPE_INTERFACE, ARGTYPE_IPADDR, ARGTYPE_PORT, ARGTYPE_IFNAME,
+  ARGTYPE_IFID
 } argtype_t;
 
 // Maximum number of arguments supported per line.
@@ -165,10 +202,38 @@ extern interface_t *interfaces;
 #define ARCOUNT(buf) (((buf)[10] >> 8) | (buf)[11])
 
 // DNS RCODE values
+#define NOERROR		0
 #define FORMERR		1
 #define SERVFAIL	2
-#define NOTIMPL		4
+#define NXDOMAIN	3
+#define NOTIMP		4
 #define REFUSED		5
+#define NOTAUTH		9
+#define DSONOTIMP	11
+
+// DNS OPCODE values
+#define QUERY 0
+#define IQUERY	1
+#define STATUS	2
+#define NOTIFY	4
+#define UPDATE	5
+#define DSO	6
+
+// DSO TLVs
+#define RETRY_DELAY		0
+#define KEEPALIVE		1
+#define MDNS_LINK_REQUEST	0x7800
+#define MDNS_LINK_INVALID	0x7801
+#define MDNS_LINK_SUBSCRIBED	0x7802
+#define MDNS_MESSAGE		0x7803
+#define L2_SOURCE_ADDRESS	0x7804
+#define IP_SOURCE_ADDRESS	0x7805
+#define LINK_IDENTIFIERS	0x7806
+#define MDNS_DISCONTINUE	0x7807
+
+// IANA address families (that we support)
+#define INET4	1
+#define INET6	2
 
 #include "asio-proto.h"
 #include "control-proto.h"

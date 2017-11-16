@@ -128,7 +128,7 @@ mdns_listener_add(interface_t *ip)
 {
   int sock, status;
   int one = 1;
-  int zero = 0;
+  //  int zero = 0;
   struct ipv6_mreq mr6;
   struct ip_mreq mr4;
   const char *errstr;

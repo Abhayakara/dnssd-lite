@@ -50,7 +50,7 @@ int whitelist_len, whitelist_max;
 
 typedef enum {
   NONE, ADD_DNS, DROP_DNS, ADD_MDNS, DROP_MDNS, ADD_ACCEPT, DROP_ACCEPT,
-  DUMP_STATUS, END
+  SET_IFID, DUMP_STATUS, END
 } code_t;
 
 control_command_t control_commands[] = {
@@ -62,18 +62,71 @@ control_command_t control_commands[] = {
 							 ARGTYPE_PORT} },
   { "drop-accept", DROP_ACCEPT, 2, control_drop_accept, {ARGTYPE_IPADDR,
 							 ARGTYPE_PORT} },
+  { "set-ifid",    SET_IFID     2, control_set_ifid,	{ARGTYPE_IFNAME,
+							 ARGTYPE_IFID} },
   { "dump-status", DUMP_STATUS, 0, control_dump_status, {} },
   { "end",         END,         0, control_end,         {} },
   { NULL,          NONE,        0, (void *)0, {} } };
+
+// Read commands out of a file...
+void
+control_process_file(const char *filename)
+{
+  char buf[2048];
+  
+  FILE *inf = fopen(filename, "r");
+  if (inf == NULL)
+    {
+      syslog(LOG_CRIT, "Unable to load commands from %s: %m", filename);
+      exit(1);
+    }
+  while (fgets(buf, sizeof buf, inf) != NULL)
+    {
+      const char *errstr;
+      char *nl;
+
+      nl = strchr(buf, '\r');
+      if (nl == NULL)
+	{
+	  nl = strchr(buf, '\n');
+	  if (nl == NULL)
+	    {
+	      syslog(LOG_ERR, "Line too long in %s: %s", filename, buf);
+	      exit(1);
+	    }
+	}
+      *nl = 0;
+	      
+      // This is a bit chatty, but pcmd_dispatch can log an error, so
+      // we want to know what caused it.
+      syslog(LOG_INFO, "Dispatch: %s", buf);
+      errstr = pcmd_dispatch(0, buf, control_commands);
+      if (errstr != NULL)
+	{
+	  syslog(LOG_CRIT, errstr);
+	  exit(1);
+	}
+    }
+  fclose(inf);
+}
 
 // Write a response to the client
 void
 control_write_status(unixconn_t *uct, int code, const char *message, const char *more)
 {
-  char buf[256];
-  snprintf(buf, sizeof buf, 
-	   "%03d %s%s%s\n", code, message, more[0] == 0 ? "" : ": ", more);
-  unixconn_write(uct, buf);
+  if (uct)
+    {
+      char buf[256];
+      snprintf(buf, sizeof buf, 
+	       "%03d %s%s%s\n", code, message, more[0] == 0 ? "" : ": ", more);
+      unixconn_write(uct, buf);
+    }
+  else
+    {
+      if (code > 500)
+	syslog(LOG_ERR, "%03d %s%s%s\n", code, message, more[0] == 0 ? "" : ": ", more);
+      return;
+    }
 }
 
 // Called when a line of text comes in from the client
@@ -111,10 +164,7 @@ control_start(const char *path)
   if (errstr != NULL)
     return errstr;
 
-  do {
-    errstr = asio_poll_once(-1);
-  } while (errstr == NULL);
-  return errstr;
+  return NULL;
 }
 
 // add-dns <interface>
@@ -267,6 +317,14 @@ control_drop_accept(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
   return;
 }
 
+void
+control_set_ifid(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *args)
+{
+  arguments[0].interface->ifid_valid = 1;
+  arguments[0].interface->ifid = arguments[1].ifid;
+  control_write_status(uct, 200, "ok", "");
+}
+
 // dump-status
 // Return a human-readable status dump
 
@@ -275,6 +333,8 @@ control_dump_status(unixconn_t *uct, control_command_t *cmd, int argc, arg_t *ar
 {
   interface_t *ip;
   int ix;
+  if (!uct)
+    return;
   for (ip = interfaces; ip; ip = ip->next)
     {
       unixconn_write(uct, "200-");

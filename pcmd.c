@@ -57,6 +57,8 @@ pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands)
   const char *start;
   control_command_t *command = NULL;
   unixconn_t *uct = thunk;
+  char *cp;
+  u_int32_t ifid;
 
   start = line;
   argc = 0;
@@ -108,7 +110,7 @@ pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands)
       
       switch (command->argtype[i])
 	{
-	case ARGTYPE_INTERFACE:
+	case ARGTYPE_IFNAME:
 	  args[i].interface = NULL;
 	  for (ip = interfaces; ip; ip = ip->next)
 	    {
@@ -122,6 +124,35 @@ pcmd_dispatch (void *thunk, char *line, control_command_t *control_commands)
 	    return "512 unknown interface\n";
 	  break;
 
+	case ARGTYPE_INTERFACE:
+	  args[i].interface = NULL;
+	  ifid = strtoul(arg, &cp, 16);
+	  // Make sure that the whole string was consumed.
+	  if (cp == arg || *cp != '\0')
+	    {
+	      return "Invalid interface ID (must be a hexadecimal integer\n";
+	    }
+	  for (ip = interfaces; ip; ip = ip->next)
+	    {
+	      if (ip->ifid_valid && ip->ifid == ifid)
+		{
+		  args[i].interface = ip;
+		  break;
+		}
+	    }
+	  if (args[i].interface == NULL)
+	    return "512 unknown interface\n";
+	  break;
+
+	case ARGTYPE_IFID:
+	  args[i].ifid = strtoul(arg, &cp, 16);
+	  // Make sure that the whole string was consumed.
+	  if (cp == arg || *cp != '\0')
+	    {
+	      return "Invalid interface ID (must be a hexadecimal integer\n";
+	    }
+	  break;
+	  
 	case ARGTYPE_IPADDR:
 	  memset(&args[i], sizeof args[i], 0);
 

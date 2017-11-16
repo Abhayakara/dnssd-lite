@@ -78,6 +78,7 @@
 //    was received.
 
 interface_t *interfaces;
+tdns_listener_t tdns;
 
 int
 ntop(char *buf, size_t buflen, address_t *address)
@@ -107,23 +108,6 @@ main(int argc, char **argv)
   const char *errstr;
 
   openlog("dnssd-relay", LOG_NDELAY|LOG_PID|LOG_PERROR, LOG_DAEMON);
-
-  // parse arguments so we know what interface(s) to exclude
-  //
-  // if no exclude interface specified, heuristic to guess which one
-  // to exclude will be required.  This is pretty easy--the netlink
-  // code can see if there is a default route on that interface; if
-  // so, don't accept queries from it.
-
-  for (i = 1; i < argc; i++)
-    {
-      if (!strcmp(argv[i], "-d"))
-	{
-	  // Daemonize.
-	  closelog();
-	  openlog("dnssd-relay", LOG_NDELAY|LOG_PID, LOG_DAEMON);
-	}
-    }
 
   // Get the interface address list.
   if (getifaddrs(&ifa) < 0)
@@ -161,17 +145,6 @@ main(int argc, char **argv)
 	      syslog(LOG_CRIT, "Interface name too long: %s", ip->name);
 	      exit(0);
 	    }
-#define CROSSLINK(i, d, m) \
-	  d.slot = -1; \
-	  d.mdns = &m; \
-	  d.interface = ip; \
-	  m.slot = -1; \
-	  m.tdns = &d; \
-	  m.interface = ip;
-	  
-	  CROSSLINK(ip, ip->dns4, ip->mdns4);
-	  CROSSLINK(ip, ip->dns6, ip->mdns6);
-
 	  ip->index = -1;
 	  ip->next = interfaces;
 	  interfaces = ip;
@@ -222,6 +195,8 @@ main(int argc, char **argv)
 		  syslog(LOG_CRIT, "coding error in sa_len simulator.");
 		  exit(1);
 		}
+	      // XXX why not just have the array of address pointers be an array
+	      // XXX of addresses?
 	      ip->addresses[ip->numaddrs] = malloc(salen);
 	      if (!ip->addresses[ip->numaddrs])
 		{
@@ -250,10 +225,48 @@ main(int argc, char **argv)
     }
 #endif
 
+  for (i = 1; i < argc; i++)
+    {
+      // Daemonize.
+      if (!strcmp(argv[i], "-d"))
+	{
+	  closelog();
+	  openlog("dnssd-relay", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+	}
+      else if (!strcmp(argv[i], "-cf"))
+	{
+	  if (i + 1 == argc)
+	    {
+	      syslog(LOG_CRIT, "-cf must be followed by an argument.");
+	      exit(1);
+	    }
+	  control_process_file(argv[++i]);
+	}
+    }
+
+  // Listen for control messages on the unix socket.
   errstr = control_start("/tmp/dnssd-relay-sock");
   if (errstr != NULL)
-    syslog(LOG_ERR, "control_start: %s", errstr);
+    {
+      syslog(LOG_ERR, "control_start: %s", errstr);
+      exit(1);
+    }
 
+  // Listen for DNS connections...
+  
+  errstr = tdns_listener_add(&tdns);
+  if (errstr != NULL)
+    {
+      syslog(LOG_ERR, "tdns_listener_add: %s", errstr);
+      exit(1);
+    }
+      
+  // Process events...
+  do {
+    errstr = asio_poll_once(-1);
+  } while (errstr == NULL);
+
+  syslog(LOG_ERR, "asio_poll_once: %s", errstr);
   return 0;
 }
 

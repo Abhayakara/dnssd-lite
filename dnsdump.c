@@ -43,7 +43,7 @@
 	     
 const char *opcode_names[16] = {"QUERY", "IQUERY", "STATUS",
 				"(reserved)", "NOTIFY", "UPDATE",
-				"(reserved)", "(reserved)", "(reserved)",
+				"DSO", "(reserved)", "(reserved)",
 				"(reserved)", "(reserved)", "(reserved)",
 				"(reserved)", "(reserved)", "(reserved)",
 				"(reserved)"};
